@@ -370,6 +370,6 @@ def api_data():
 market = {name: get_cached(sym) for name, sym in TICKERS.items()}
 return jsonify({“status”: “ok”, “timestamp”: datetime.now().isoformat(), “market”: market})
 
-if **name** == “**main**”:
+if __name__ == "__main__":
 port = int(os.environ.get(“PORT”, 5000))
 app.run(host=“0.0.0.0”, port=port, debug=False)
