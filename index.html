@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Nifty AI Signal Engine</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@400;700;800&display=swap');
+*{margin:0;padding:0;box-sizing:border-box;}
+:root{
+  --bg:#060a10;--surface:#0d1520;--surface2:#111c2e;
+  --border:rgba(0,200,150,0.12);
+  --green:#00e8a2;--red:#ff4b6e;--yellow:#f5c842;--blue:#3d9eff;
+  --text:#e2f0f8;--muted:#4a6b85;
+}
+body{background:var(--bg);color:var(--text);font-family:'Syne',sans-serif;min-height:100vh;padding:16px;}
+.mono{font-family:'Space Mono',monospace;}
+.header{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;flex-wrap:wrap;gap:10px;}
+.logo{display:flex;align-items:center;gap:10px;}
+.logo-icon{width:38px;height:38px;background:linear-gradient(135deg,var(--green),#007a52);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:18px;}
+.logo h1{font-size:20px;font-weight:800;background:linear-gradient(90deg,var(--green),var(--blue));-webkit-background-clip:text;-webkit-text-fill-color:transparent;}
+.logo span{font-size:10px;color:var(--muted);font-family:'Space Mono',monospace;letter-spacing:2px;-webkit-text-fill-color:var(--muted);}
+.header-right{display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
+.live-badge{display:flex;align-items:center;gap:6px;background:rgba(0,232,162,0.08);border:1px solid rgba(0,232,162,0.2);border-radius:20px;padding:5px 12px;font-size:11px;font-weight:700;letter-spacing:1.5px;color:var(--green);font-family:'Space Mono',monospace;}
+.live-dot{width:6px;height:6px;background:var(--green);border-radius:50%;animation:pulse 1.5s infinite;}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.3}}
+.timestamp{font-family:'Space Mono',monospace;font-size:11px;color:var(--muted);}
+.refresh-btn{background:rgba(0,232,162,0.08);border:1px solid rgba(0,232,162,0.2);color:var(--green);padding:7px 14px;border-radius:10px;font-size:11px;font-weight:700;cursor:pointer;font-family:'Space Mono',monospace;}
+.auto-badge{background:rgba(61,158,255,0.1);border:1px solid rgba(61,158,255,0.2);color:var(--blue);padding:5px 10px;border-radius:20px;font-size:10px;font-family:'Space Mono',monospace;letter-spacing:1px;}
+
+.hero{border-radius:18px;padding:22px;margin-bottom:16px;border:1px solid var(–border);background:var(–surface);transition:all 0.3s;}
+.hero.bullish{border-color:rgba(0,232,162,0.3);box-shadow:0 0 30px rgba(0,232,162,0.15);}
+.hero.bearish{border-color:rgba(255,75,110,0.3);box-shadow:0 0 30px rgba(255,75,110,0.15);}
+.hero.neutral{border-color:rgba(245,200,66,0.3);box-shadow:0 0 20px rgba(245,200,66,0.1);}
+.hero-top{display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:14px;}
+.price-label{font-size:10px;letter-spacing:2px;color:var(–muted);font-family:‘Space Mono’,monospace;margin-bottom:4px;}
+.price-value{font-size:38px;font-weight:800;font-family:‘Space Mono’,monospace;letter-spacing:-2px;line-height:1;}
+.price-change{font-family:‘Space Mono’,monospace;font-size:13px;font-weight:700;margin-top:4px;}
+.price-change.up{color:var(–green);}.price-change.down{color:var(–red);}
+.signal-badge{font-size:20px;font-weight:800;padding:8px 18px;border-radius:10px;text-align:center;}
+.signal-badge.bullish{color:var(–green);background:rgba(0,232,162,0.1);border:1px solid rgba(0,232,162,0.3);}
+.signal-badge.bearish{color:var(–red);background:rgba(255,75,110,0.1);border:1px solid rgba(255,75,110,0.3);}
+.signal-badge.neutral{color:var(–yellow);background:rgba(245,200,66,0.1);border:1px solid rgba(245,200,66,0.3);}
+.signal-lbl{font-size:10px;letter-spacing:2px;color:var(–muted);font-family:‘Space Mono’,monospace;margin-bottom:6px;}
+.regime-pill{display:inline-block;padding:4px 12px;border-radius:20px;font-size:10px;font-weight:700;letter-spacing:1px;font-family:‘Space Mono’,monospace;margin-top:8px;}
+.regime-pill.trending{background:rgba(0,232,162,0.1);color:var(–green);border:1px solid rgba(0,232,162,0.2);}
+.regime-pill.volatile{background:rgba(255,75,110,0.1);color:var(–red);border:1px solid rgba(255,75,110,0.2);}
+.regime-pill.range{background:rgba(245,200,66,0.1);color:var(–yellow);border:1px solid rgba(245,200,66,0.2);}
+.regime-pill.oversold{background:rgba(61,158,255,0.1);color:var(–blue);border:1px solid rgba(61,158,255,0.2);}
+.regime-pill.overbought{background:rgba(255,75,110,0.1);color:var(–red);border:1px solid rgba(255,75,110,0.2);}
+.conf-section{margin-top:16px;}
+.conf-header{display:flex;justify-content:space-between;font-size:10px;letter-spacing:1.5px;color:var(–muted);font-family:‘Space Mono’,monospace;margin-bottom:6px;}
+.conf-val{color:var(–green);font-weight:700;}
+.conf-track{height:4px;background:rgba(255,255,255,0.06);border-radius:2px;overflow:hidden;}
+.conf-fill{height:100%;border-radius:2px;transition:width 1s ease;}
+.conf-fill.bullish{background:linear-gradient(90deg,#007a52,var(–green));}
+.conf-fill.bearish{background:linear-gradient(90deg,#8b0020,var(–red));}
+.conf-fill.neutral{background:linear-gradient(90deg,#7a6000,var(–yellow));}
+
+.tabs{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;}
+.tab{padding:8px 16px;border-radius:10px;font-size:11px;font-weight:700;cursor:pointer;font-family:‘Space Mono’,monospace;letter-spacing:1px;border:1px solid var(–border);background:var(–surface);color:var(–muted);transition:all 0.2s;}
+.tab.active{background:rgba(0,232,162,0.1);border-color:rgba(0,232,162,0.3);color:var(–green);}
+
+.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px;}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px;}
+.card{background:var(–surface);border:1px solid var(–border);border-radius:14px;padding:16px;}
+.card-title{font-size:10px;letter-spacing:2px;color:var(–muted);font-family:‘Space Mono’,monospace;margin-bottom:10px;}
+.metric{font-size:26px;font-weight:800;font-family:‘Space Mono’,monospace;letter-spacing:-1px;line-height:1;}
+.metric-sub{font-size:10px;color:var(–muted);margin-top:4px;font-family:‘Space Mono’,monospace;}
+.metric-sub.up{color:var(–green);}.metric-sub.down{color:var(–red);}
+
+.fg-meter{margin-top:10px;}
+.fg-bar{height:8px;border-radius:4px;background:linear-gradient(90deg,var(–red),var(–yellow),var(–green));position:relative;margin:8px 0;}
+.fg-needle{position:absolute;top:-4px;width:16px;height:16px;background:white;border-radius:50%;transform:translateX(-50%);transition:left 1s ease;border:2px solid var(–bg);}
+.fg-labels{display:flex;justify-content:space-between;font-size:9px;color:var(–muted);font-family:‘Space Mono’,monospace;}
+
+.drivers{display:flex;flex-direction:column;gap:8px;}
+.driver{display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(–surface2);border-radius:10px;font-size:12px;font-weight:600;}
+.driver-lbl{flex:1;}
+.driver-detail{font-size:10px;color:var(–muted);font-family:‘Space Mono’,monospace;}
+.tag{font-size:10px;font-family:‘Space Mono’,monospace;padding:2px 8px;border-radius:6px;font-weight:700;}
+.tag.pos{background:rgba(0,232,162,0.15);color:var(–green);}
+.tag.neg{background:rgba(255,75,110,0.15);color:var(–red);}
+
+table{width:100%;border-collapse:collapse;}
+th{text-align:left;font-size:10px;letter-spacing:1.5px;color:var(–muted);font-family:‘Space Mono’,monospace;padding:0 0 10px;border-bottom:1px solid var(–border);font-weight:400;}
+td{padding:9px 0;border-bottom:1px solid rgba(255,255,255,0.03);font-size:12px;}
+tr:last-child td{border-bottom:none;}
+.asset{font-weight:700;}
+.aprice{font-family:‘Space Mono’,monospace;font-size:11px;}
+.cpill{display:inline-block;padding:2px 8px;border-radius:6px;font-size:10px;font-family:‘Space Mono’,monospace;font-weight:700;}
+.cpill.up{background:rgba(0,232,162,0.12);color:var(–green);}
+.cpill.down{background:rgba(255,75,110,0.12);color:var(–red);}
+
+.backtest-card{background:var(–surface);border:1px solid var(–border);border-radius:14px;padding:16px;margin-bottom:16px;}
+.accuracy-big{font-size:52px;font-weight:800;font-family:‘Space Mono’,monospace;letter-spacing:-2px;}
+.bt-row{display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid rgba(255,255,255,0.03);font-size:11px;font-family:‘Space Mono’,monospace;}
+.bt-row:last-child{border-bottom:none;}
+.correct{color:var(–green);}.wrong{color:var(–red);}
+
+.sparkline-wrap{margin-top:10px;}
+svg.spark{display:block;}
+
+.error-box{background:rgba(255,75,110,0.08);border:1px solid rgba(255,75,110,0.3);border-radius:12px;padding:12px 16px;margin-bottom:16px;font-size:11px;color:var(–red);font-family:‘Space Mono’,monospace;}
+.loading-box{text-align:center;padding:50px 20px;font-family:‘Space Mono’,monospace;font-size:11px;color:var(–muted);letter-spacing:2px;}
+.spinner{width:32px;height:32px;border:3px solid rgba(0,232,162,0.1);border-top-color:var(–green);border-radius:50%;animation:spin 0.8s linear infinite;margin:0 auto 14px;}
+@keyframes spin{to{transform:rotate(360deg)}}
+.footer{text-align:center;color:var(–muted);font-size:10px;font-family:‘Space Mono’,monospace;letter-spacing:1.5px;margin-top:10px;}
+.countdown{font-size:10px;color:var(–blue);font-family:‘Space Mono’,monospace;letter-spacing:1px;}
+
+@media(max-width:600px){
+.grid3{grid-template-columns:1fr 1fr;}
+.grid2{grid-template-columns:1fr;}
+.hero-top{flex-direction:column;}
+.price-value{font-size:30px;}
+}
+</style>
+
+</head>
+<body>
+<div class="header">
+  <div class="logo">
+    <div class="logo-icon">🧠</div>
+    <div>
+      <h1>NIFTY AI</h1>
+      <span>SIGNAL ENGINE v2.0</span>
+    </div>
+  </div>
+  <div class="header-right">
+    <div class="live-badge"><div class="live-dot"></div>LIVE</div>
+    <div class="auto-badge">AUTO ↻ 5MIN</div>
+    <div class="timestamp mono" id="clock">--:--:-- IST</div>
+    <button class="refresh-btn" onclick="loadAll()">↻</button>
+  </div>
+</div>
+
+<div class="tabs">
+  <div class="tab active" onclick="showTab('signal')">📊 SIGNAL</div>
+  <div class="tab" onclick="showTab('backtest')">🎯 BACKTEST</div>
+  <div class="tab" onclick="showTab('sentiment')">😰 SENTIMENT</div>
+</div>
+
+<div id="error-box" class="error-box" style="display:none;"></div>
+<div id="loading-box" class="loading-box"><div class="spinner"></div>FETCHING LIVE DATA...</div>
+
+<!-- SIGNAL TAB -->
+
+<div id="tab-signal" style="display:none;">
+  <div class="hero" id="hero">
+    <div class="hero-top">
+      <div>
+        <div class="price-label">NIFTY 50 · YAHOO FINANCE LIVE</div>
+        <div class="price-value mono" id="nifty-price">—</div>
+        <div class="price-change" id="nifty-change">—</div>
+      </div>
+      <div>
+        <div class="signal-lbl">AI SIGNAL</div>
+        <div class="signal-badge" id="signal-badge">—</div>
+        <div id="regime-pill" class="regime-pill"></div>
+      </div>
+    </div>
+    <div class="conf-section">
+      <div class="conf-header"><span>AI CONFIDENCE</span><span class="conf-val" id="conf-val">—</span></div>
+      <div class="conf-track"><div class="conf-fill" id="conf-fill" style="width:0%"></div></div>
+    </div>
+  </div>
+
+  <div class="grid3">
+    <div class="card">
+      <div class="card-title">INDIA VIX</div>
+      <div class="metric" id="vix-val">—</div>
+      <div class="metric-sub" id="vix-sub">—</div>
+    </div>
+    <div class="card">
+      <div class="card-title">NIFTY RSI</div>
+      <div class="metric" id="rsi-val">—</div>
+      <div class="metric-sub" id="rsi-sub">—</div>
+    </div>
+    <div class="card">
+      <div class="card-title">PROBABILITY</div>
+      <div class="metric" id="prob-val">—</div>
+      <div class="metric-sub">ENSEMBLE</div>
+    </div>
+  </div>
+
+  <div class="grid2">
+    <div class="card">
+      <div class="card-title">SIGNAL DRIVERS</div>
+      <div class="drivers" id="drivers-list"></div>
+    </div>
+    <div class="card">
+      <div class="card-title">GLOBAL MARKETS · LIVE</div>
+      <table>
+        <thead><tr><th>ASSET</th><th>PRICE</th><th>CHG</th></tr></thead>
+        <tbody id="market-table"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- BACKTEST TAB -->
+
+<div id="tab-backtest" style="display:none;">
+  <div class="backtest-card">
+    <div class="card-title">3-MONTH BACKTEST ACCURACY</div>
+    <div class="accuracy-big" id="bt-accuracy" style="color:var(--green)">—%</div>
+    <div style="font-size:12px;color:var(--muted);font-family:'Space Mono',monospace;margin-top:6px;" id="bt-summary">Loading...</div>
+    <div style="margin-top:16px;">
+      <div class="conf-header"><span>WIN RATE</span><span class="conf-val" id="bt-winrate">—</span></div>
+      <div class="conf-track"><div class="conf-fill bullish" id="bt-bar" style="width:0%"></div></div>
+    </div>
+  </div>
+  <div class="card" style="margin-bottom:16px;">
+    <div class="card-title">LAST 10 PREDICTIONS</div>
+    <div id="bt-rows"></div>
+  </div>
+</div>
+
+<!-- SENTIMENT TAB -->
+
+<div id="tab-sentiment" style="display:none;">
+  <div class="card" style="margin-bottom:16px;">
+    <div class="card-title">FEAR & GREED INDEX</div>
+    <div class="metric" id="fg-score" style="margin-bottom:8px;">—</div>
+    <div class="metric-sub" id="fg-label">Loading...</div>
+    <div class="fg-meter">
+      <div class="fg-bar"><div class="fg-needle" id="fg-needle" style="left:50%"></div></div>
+      <div class="fg-labels"><span>FEAR</span><span>NEUTRAL</span><span>GREED</span></div>
+    </div>
+  </div>
+  <div class="grid2">
+    <div class="card">
+      <div class="card-title">VIX FEAR LEVEL</div>
+      <div class="metric" id="sg-vix">—</div>
+      <div class="metric-sub" id="sg-vix-lbl">—</div>
+    </div>
+    <div class="card">
+      <div class="card-title">GOLD SAFE HAVEN</div>
+      <div class="metric" id="sg-gold">—</div>
+      <div class="metric-sub" id="sg-gold-lbl">—</div>
+    </div>
+    <div class="card">
+      <div class="card-title">CRUDE PRESSURE</div>
+      <div class="metric" id="sg-crude">—</div>
+      <div class="metric-sub" id="sg-crude-lbl">—</div>
+    </div>
+    <div class="card">
+      <div class="card-title">INR STRESS</div>
+      <div class="metric" id="sg-inr">—</div>
+      <div class="metric-sub" id="sg-inr-lbl">—</div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-title">FII/DII PROXY SIGNAL</div>
+    <div id="fii-block" style="font-family:'Space Mono',monospace;font-size:12px;color:var(--muted);padding:10px 0;">
+      Derived from VIX + USD/INR + Gold movement patterns
+    </div>
+  </div>
+</div>
+
+<div class="footer" id="footer">NIFTY AI v2.0 · YAHOO FINANCE · NOT FINANCIAL ADVICE</div>
+<div style="text-align:center;margin-top:6px;" class="countdown" id="countdown">Next refresh in: 5:00</div>
+
+<script>
+const API = "https://nifty-ai-backend-es7z.onrender.com";
+let signalData = null;
+let countdown = 300;
+
+function fmt(v,d=2){
+  if(v==null) return "—";
+  return parseFloat(v).toLocaleString("en-IN",{minimumFractionDigits:d,maximumFractionDigits:d});
+}
+
+const SIG = {bullish:"⬆ BULLISH", bearish:"⬇ BEARISH", neutral:"◆ NEUTRAL"};
+const REG = {trending:"↗ TRENDING", volatile:"⚡ HIGH VOL", range:"↔ RANGE", oversold:"📉 OVERSOLD", overbought:"📈 OVERBOUGHT"};
+
+function showTab(name) {
+  ["signal","backtest","sentiment"].forEach(t => {
+    document.getElementById("tab-"+t).style.display = t===name?"block":"none";
+  });
+  document.querySelectorAll(".tab").forEach((el,i) => {
+    el.classList.toggle("active", ["signal","backtest","sentiment"][i]===name);
+  });
+  if(name==="backtest" && !document.getElementById("bt-accuracy").textContent.includes("%") ) loadBacktest();
+}
+
+async function loadAll() {
+  document.getElementById("loading-box").style.display="block";
+  document.getElementById("tab-signal").style.display="none";
+  document.getElementById("error-box").style.display="none";
+  try {
+    const res = await fetch(API+"/api/signal");
+    if(!res.ok) throw new Error("HTTP "+res.status);
+    const d = await res.json();
+    if(d.status!=="ok") throw new Error(d.message||"error");
+    signalData = d;
+    renderSignal(d);
+    renderSentiment(d);
+    countdown = 300;
+  } catch(e) {
+    document.getElementById("loading-box").style.display="none";
+    const eb = document.getElementById("error-box");
+    eb.style.display="block";
+    eb.textContent = "Cannot reach backend: "+e.message;
+  }
+}
+
+function renderSignal(d) {
+  const sig = d.signal||{};
+  const mkt = d.market||{};
+  const drivers = d.drivers||[];
+  const regime = d.regime||"range";
+  const dir = sig.direction||"neutral";
+  const conf = sig.confidence||50;
+  const nifty = mkt.nifty||{};
+  const niftyUp = (nifty.change_pct||0)>=0;
+  const niftyRsi = nifty.rsi||50;
+
+  document.getElementById("hero").className="hero "+dir;
+  document.getElementById("nifty-price").textContent=fmt(nifty.price);
+  const nc=document.getElementById("nifty-change");
+  nc.textContent=(niftyUp?"▲ ":"▼ ")+Math.abs(nifty.change_pct||0).toFixed(2)+"% TODAY";
+  nc.className="price-change "+(niftyUp?"up":"down");
+  const sb=document.getElementById("signal-badge");
+  sb.textContent=SIG[dir]||dir;
+  sb.className="signal-badge "+dir;
+  const rp=document.getElementById("regime-pill");
+  rp.textContent=REG[regime]||regime;
+  rp.className="regime-pill "+(["volatile","bearish","overbought"].includes(regime)?"volatile":regime==="trending"?"trending":regime==="oversold"?"oversold":"range");
+  document.getElementById("conf-val").textContent=conf.toFixed(1)+"%";
+  const cf=document.getElementById("conf-fill");
+  cf.style.width=conf+"%";
+  cf.className="conf-fill "+dir;
+
+  const vix=(mkt.india_vix||{}).price;
+  const vixHigh=(vix||0)>18;
+  document.getElementById("vix-val").textContent=vix||"—";
+  document.getElementById("vix-val").style.color=vixHigh?"var(--red)":"var(--green)";
+  document.getElementById("vix-sub").textContent=vixHigh?"▲ ELEVATED":"▼ CALM";
+  document.getElementById("vix-sub").className="metric-sub "+(vixHigh?"down":"up");
+
+  document.getElementById("rsi-val").textContent=niftyRsi;
+  document.getElementById("rsi-val").style.color=niftyRsi>65?"var(--red)":niftyRsi<35?"var(--blue)":"var(--green)";
+  document.getElementById("rsi-sub").textContent=niftyRsi>65?"OVERBOUGHT":niftyRsi<35?"OVERSOLD":"NEUTRAL ZONE";
+
+  document.getElementById("prob-val").textContent=conf.toFixed(1)+"%";
+  document.getElementById("prob-val").style.color=conf>62?"var(--green)":conf<38?"var(--red)":"var(--yellow)";
+
+  const dl=document.getElementById("drivers-list");
+  dl.innerHTML="";
+  drivers.forEach(dr=>{
+    dl.innerHTML+=`<div class="driver">
+      <span>${dr.icon}</span>
+      <span class="driver-lbl">${dr.label}</span>
+      ${dr.detail?`<span class="driver-detail">${dr.detail}</span>`:""}
+      <span class="tag ${dr.tag}">${dr.tag==="pos"?"BULL":"BEAR"}</span>
+    </div>`;
+  });
+
+  const rows=[
+    {name:"Bank Nifty", ...(mkt.banknifty||{})},
+    {name:"Nasdaq",     ...(mkt.nasdaq||{})},
+    {name:"Nikkei",     ...(mkt.nikkei||{})},
+    {name:"HangSeng",   ...(mkt.hangseng||{})},
+    {name:"USD/INR",    ...(mkt.usd_inr||{})},
+    {name:"Crude Oil",  ...(mkt.crude||{})},
+  ];
+  const tb=document.getElementById("market-table");
+  tb.innerHTML="";
+  rows.forEach(r=>{
+    const up=(r.change_pct||0)>=0;
+    tb.innerHTML+=`<tr>
+      <td><span class="asset">${r.name}</span></td>
+      <td><span class="aprice">${fmt(r.price)}</span></td>
+      <td><span class="cpill ${up?"up":"down"}">${up?"+":""}${(r.change_pct||0).toFixed(2)}%</span></td>
+    </tr>`;
+  });
+
+  document.getElementById("footer").textContent="NIFTY AI v2.0 · YAHOO FINANCE · NOT FINANCIAL ADVICE · "+new Date(d.timestamp).toLocaleTimeString("en-IN");
+  document.getElementById("loading-box").style.display="none";
+  document.getElementById("tab-signal").style.display="block";
+}
+
+function renderSentiment(d) {
+  const mkt = d.market||{};
+  const vix = (mkt.india_vix||{}).price||14;
+  const gold = (mkt.gold||{}).change_pct||0;
+  const crude = (mkt.crude||{}).change_pct||0;
+  const inr = (mkt.usd_inr||{}).change_pct||0;
+
+  // Fear & Greed score (0-100, higher = more greed)
+  let fg = 50;
+  fg -= (vix - 14) * 2;
+  fg += gold < 0 ? 10 : -5;
+  fg -= crude > 2 ? 10 : 0;
+  fg -= inr > 0.3 ? 8 : 0;
+  const niftyRsi = (mkt.nifty||{}).rsi||50;
+  fg += (niftyRsi - 50) * 0.5;
+  fg = Math.max(0, Math.min(100, Math.round(fg)));
+
+  let fgLabel, fgColor;
+  if(fg < 25){fgLabel="EXTREME FEAR";fgColor="var(--red)";}
+  else if(fg < 40){fgLabel="FEAR";fgColor="var(--red)";}
+  else if(fg < 60){fgLabel="NEUTRAL";fgColor="var(--yellow)";}
+  else if(fg < 75){fgLabel="GREED";fgColor="var(--green)";}
+  else{fgLabel="EXTREME GREED";fgColor="var(--green)";}
+
+  document.getElementById("fg-score").textContent=fg;
+  document.getElementById("fg-score").style.color=fgColor;
+  document.getElementById("fg-label").textContent=fgLabel;
+  document.getElementById("fg-needle").style.left=fg+"%";
+
+  document.getElementById("sg-vix").textContent=vix.toFixed(1);
+  document.getElementById("sg-vix").style.color=vix>20?"var(--red)":vix>16?"var(--yellow)":"var(--green)";
+  document.getElementById("sg-vix-lbl").textContent=vix>20?"HIGH FEAR":vix>16?"MODERATE":"CALM";
+
+  document.getElementById("sg-gold").textContent=(gold>=0?"+":"")+gold.toFixed(2)+"%";
+  document.getElementById("sg-gold").style.color=gold>1?"var(--red)":"var(--green)";
+  document.getElementById("sg-gold-lbl").textContent=gold>1?"SAFE HAVEN BUYING":"NO PANIC";
+
+  document.getElementById("sg-crude").textContent=(crude>=0?"+":"")+crude.toFixed(2)+"%";
+  document.getElementById("sg-crude").style.color=crude>2?"var(--red)":"var(--green)";
+  document.getElementById("sg-crude-lbl").textContent=crude>2?"INFLATIONARY":"STABLE";
+
+  document.getElementById("sg-inr").textContent=(inr>=0?"+":"")+inr.toFixed(2)+"%";
+  document.getElementById("sg-inr").style.color=inr>0.3?"var(--red)":"var(--green)";
+  document.getElementById("sg-inr-lbl").textContent=inr>0.3?"INR UNDER PRESSURE":"INR STABLE";
+
+  // FII/DII proxy
+  const fiiBull = vix < 16 && inr < 0.2 && gold < 0.5;
+  const fiiBear = vix > 20 || inr > 0.5 || gold > 1.5;
+  const fiiText = fiiBull ? "🟢 FII LIKELY BUYING — Low VIX, stable INR, no safe haven demand" :
+                  fiiBear ? "🔴 FII LIKELY SELLING — High VIX, INR pressure or gold spike detected" :
+                  "🟡 FII MIXED — Conflicting signals, monitor closely";
+  document.getElementById("fii-block").textContent = fiiText;
+}
+
+async function loadBacktest() {
+  document.getElementById("bt-accuracy").textContent="...";
+  document.getElementById("bt-summary").textContent="Running backtest...";
+  try {
+    const res = await fetch(API+"/api/backtest");
+    const d = await res.json();
+    const bt = d.backtest||{};
+    const acc = bt.accuracy||0;
+    document.getElementById("bt-accuracy").textContent=acc+"%";
+    document.getElementById("bt-accuracy").style.color=acc>55?"var(--green)":acc>45?"var(--yellow)":"var(--red)";
+    document.getElementById("bt-summary").textContent=bt.summary||"";
+    document.getElementById("bt-winrate").textContent=acc+"%";
+    document.getElementById("bt-bar").style.width=acc+"%";
+    const rows=document.getElementById("bt-rows");
+    rows.innerHTML="";
+    (bt.last_10||[]).forEach(r=>{
+      rows.innerHTML+=`<div class="bt-row">
+        <span>${r.date}</span>
+        <span>${r.predicted.toUpperCase()}</span>
+        <span class="${r.correct?"correct":"wrong"}">${r.correct?"✓ CORRECT":"✗ WRONG"}</span>
+        <span style="color:var(--muted)">${r.confidence}%</span>
+      </div>`;
+    });
+  } catch(e) {
+    document.getElementById("bt-summary").textContent="Error: "+e.message;
+  }
+}
+
+setInterval(()=>{
+  document.getElementById("clock").textContent=new Date().toLocaleTimeString("en-IN",{hour:"2-digit",minute:"2-digit",second:"2-digit"})+" IST";
+  countdown--;
+  if(countdown<=0){loadAll();countdown=300;}
+  const m=Math.floor(countdown/60);
+  const s=countdown%60;
+  document.getElementById("countdown").textContent="Next refresh in: "+m+":"+(s<10?"0":"")+s;
+},1000);
+
+loadAll();
+</script>
+
+</body>
+</html>
