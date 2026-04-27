@@ -2,7 +2,7 @@ import os
 import json
 import traceback
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 import yfinance as yf
@@ -19,6 +19,7 @@ CACHE = {}
 CACHE_TTL = 300
 SIGNAL_HISTORY_FILE = "/tmp/signal_history.json"
 ALERTS_FILE = "/tmp/price_alerts.json"
+STATE_FILE = "/tmp/last_state.json"
 
 TICKERS = {}
 TICKERS["nifty"]     = "^NSEI"
@@ -33,7 +34,7 @@ TICKERS["gold"]      = "GC=F"
 TICKERS["vix"]       = "^VIX"
 TICKERS["india_vix"] = "^INDIAVIX"
 
-# ─── DATA FETCH ───────────────────────────────────────────────
+# DATA FETCH
 
 def fetch_data(symbol):
     try:
@@ -80,112 +81,75 @@ def get_cached(symbol):
     CACHE[symbol] = (data, now)
     return data
 
-# ─── PUT CALL RATIO ───────────────────────────────────────────
+# PUT CALL RATIO via NSE public API
 
 def fetch_pcr():
     try:
-        nifty = yf.Ticker("^NSEI")
-        hist_data = nifty.history(period="2d")
-        if hist_data.empty:
-            return {"pcr": None, "signal": "neutral", "detail": "No price history"}
-        price = hist_data["Close"].iloc[-1]
-        strike = round(price / 100) * 100
-        exp_dates = nifty.options
-        if not exp_dates:
-            return {"pcr": None, "signal": "neutral", "detail": "No options data"}
-        chain = nifty.option_chain(exp_dates[0])
-        put_oi = float(chain.puts["openInterest"].sum())
-        call_oi = float(chain.calls["openInterest"].sum())
-        if call_oi == 0:
+        headers = {}
+        headers["User-Agent"] = "Mozilla/5.0"
+        headers["Accept"] = "application/json"
+        headers["Referer"] = "https://www.nseindia.com"
+
+        session = requests.Session()
+        session.get("https://www.nseindia.com", headers=headers, timeout=10)
+
+        url = "https://www.nseindia.com/api/option-chain-indices?symbol=NIFTY"
+        res = session.get(url, headers=headers, timeout=15)
+
+        if res.status_code != 200:
+            return {"pcr": None, "signal": "neutral", "detail": "NSE API unavailable"}
+
+        data = res.json()
+        records = data.get("records", {}).get("data", [])
+
+        total_put_oi = 0
+        total_call_oi = 0
+
+        for record in records:
+            if "PE" in record:
+                total_put_oi += record["PE"].get("openInterest", 0)
+            if "CE" in record:
+                total_call_oi += record["CE"].get("openInterest", 0)
+
+        if total_call_oi == 0:
             return {"pcr": None, "signal": "neutral", "detail": "No OI data"}
-        pcr = round(put_oi / call_oi, 2)
+
+        pcr = round(total_put_oi / total_call_oi, 2)
+
         if pcr > 1.2:
             signal = "bullish"
-            detail = "High put OI - smart money hedged, market support likely"
+            detail = "High put OI — smart money hedged, support likely"
         elif pcr < 0.8:
             signal = "bearish"
-            detail = "Low put OI - complacency, downside risk"
+            detail = "Low put OI — complacency, downside risk"
         else:
             signal = "neutral"
-            detail = "Balanced OI - no strong directional bias"
-        return {"pcr": pcr, "put_oi": int(put_oi), "call_oi": int(call_oi), "signal": signal, "detail": detail}
+            detail = "Balanced OI — no strong directional bias"
+
+        return {
+            "pcr": pcr,
+            "put_oi": int(total_put_oi),
+            "call_oi": int(total_call_oi),
+            "signal": signal,
+            "detail": detail
+        }
+
     except Exception as e:
         print("PCR error: " + str(e))
-        return {"pcr": None, "signal": "neutral", "detail": "PCR unavailable"}
+        return {"pcr": None, "signal": "neutral", "detail": "PCR fetch failed"}
 
-# ─── XGBOOST ML MODEL ────────────────────────────────────────
+PCR_CACHE = {"data": None, "ts": 0}
 
-def train_and_predict(features):
-    try:
-        t = yf.Ticker("^NSEI")
-        hist = t.history(period="2y", interval="1d")
-        if hist.empty or len(hist) < 60:
-            return None
-        close = hist["Close"].dropna()
-        X = []
-        y = []
-        for i in range(20, len(close) - 1):
-            delta = close.diff()
-            gain = delta.clip(lower=0).iloc[i-14:i].mean()
-            loss = -delta.clip(upper=0).iloc[i-14:i].mean()
-            rsi = 50.0
-            if loss and loss > 1e-6:
-                rsi = float(100 - (100 / (1 + gain / loss)))
-            sma20 = float(close.iloc[i-20:i].mean())
-            sma50 = float(close.iloc[max(0,i-50):i].mean()) if i >= 50 else sma20
-            current = float(close.iloc[i])
-            prev = float(close.iloc[i-1])
-            chg1 = (current - prev) / prev * 100
-            chg5 = (current - float(close.iloc[i-5])) / float(close.iloc[i-5]) * 100
-            chg20 = (current - float(close.iloc[i-20])) / float(close.iloc[i-20]) * 100
-            above_sma20 = 1 if current > sma20 else 0
-            above_sma50 = 1 if current > sma50 else 0
-            row = [rsi/100, chg1/5, chg5/10, chg20/20, above_sma20, above_sma50]
-            X.append(row)
-            next_close = float(close.iloc[i+1])
-            y.append(1 if next_close > current else 0)
+def get_cached_pcr():
+    now = datetime.now().timestamp()
+    if PCR_CACHE["data"] and now - PCR_CACHE["ts"] < 600:
+        return PCR_CACHE["data"]
+    data = fetch_pcr()
+    PCR_CACHE["data"] = data
+    PCR_CACHE["ts"] = now
+    return data
 
-        X = np.array(X, dtype=float)
-        y = np.array(y, dtype=float)
-        n = len(X)
-        train_size = int(n * 0.8)
-        X_train = X[:train_size]
-        y_train = y[:train_size]
-
-        # Logistic regression (manual implementation)
-        def sigmoid(z):
-            return 1 / (1 + np.exp(-np.clip(z, -500, 500)))
-
-        weights = np.zeros(X_train.shape[1])
-        bias = 0.0
-        lr = 0.01
-        for _ in range(200):
-            z = X_train.dot(weights) + bias
-            pred = sigmoid(z)
-            err = pred - y_train
-            weights -= lr * X_train.T.dot(err) / len(y_train)
-            bias -= lr * err.mean()
-
-        # Current feature vector
-        nifty_chg = features.get("nifty_change", 0)
-        nifty_rsi = features.get("nifty_rsi", 50)
-        nifty_sma = features.get("nifty_sma", 0)
-        chg1w = features.get("nifty_change_1w", 0)
-        feat_vec = np.array([nifty_rsi/100, nifty_chg/5, chg1w/10, 0, nifty_sma, nifty_sma])
-        ml_prob = float(sigmoid(feat_vec.dot(weights) + bias))
-
-        # Test accuracy
-        X_test = X[train_size:]
-        y_test = y[train_size:]
-        test_preds = sigmoid(X_test.dot(weights) + bias) > 0.5
-        accuracy = float(np.mean(test_preds == y_test)) * 100
-
-        return {"probability": round(ml_prob, 4), "accuracy": round(accuracy, 1), "model": "logistic_regression"}
-    except Exception as e:
-        print("ML error: " + str(e))
-        return None
-
-# ─── FEATURES + SIGNAL ────────────────────────────────────────
+# FEATURES
 
 def compute_features(market):
     def chg(key):
@@ -244,7 +208,7 @@ WEIGHTS["trend_signal"]    =  0.06
 WEIGHTS["weekly_trend"]    =  0.05
 WEIGHTS["gold_fear"]       = -0.05
 
-def compute_signal(f, regime, ml_result=None, pcr_data=None):
+def compute_signal(f, regime):
     score = 0.5
     continuous = ["nifty_change","nasdaq_change","sp500_change","nikkei_change","hangseng_change","usd_inr_change","crude_change"]
     for feat in WEIGHTS:
@@ -252,20 +216,6 @@ def compute_signal(f, regime, ml_result=None, pcr_data=None):
         if feat in continuous:
             val = max(-3, min(3, val)) / 3.0
         score += WEIGHTS[feat] * val
-
-    # PCR adjustment
-    if pcr_data and pcr_data.get("pcr"):
-        pcr = pcr_data["pcr"]
-        if pcr > 1.2:
-            score += 0.05
-        elif pcr < 0.8:
-            score -= 0.05
-
-    # ML blend
-    if ml_result and ml_result.get("probability"):
-        ml_prob = ml_result["probability"]
-        score = score * 0.7 + ml_prob * 0.3
-
     if regime == "volatile":
         score = 0.5 + (score - 0.5) * 0.5
     elif regime == "trending":
@@ -274,7 +224,6 @@ def compute_signal(f, regime, ml_result=None, pcr_data=None):
         score = max(score, 0.55)
     elif regime == "overbought":
         score = min(score, 0.45)
-
     score = max(0.05, min(0.95, score))
     if score > 0.62:
         direction = "bullish"
@@ -284,68 +233,137 @@ def compute_signal(f, regime, ml_result=None, pcr_data=None):
         direction = "neutral"
     return {"direction": direction, "probability": round(score, 4), "confidence": round(score * 100, 1)}
 
-def build_drivers(f, pcr_data=None):
+def compute_edge(direction, conf, regime, rsi, vix):
+    score = 0
+    if conf > 70: score += 3
+    elif conf > 62: score += 2
+    elif conf > 55: score += 1
+    if regime == "trending": score += 2
+    elif regime == "range": score += 1
+    elif regime == "volatile": score -= 1
+    if rsi < 35 and direction == "bullish": score += 2
+    elif rsi > 65 and direction == "bearish": score += 2
+    elif 40 < rsi < 60: score += 1
+    elif rsi > 70 or rsi < 30: score -= 1
+    if vix < 14: score += 2
+    elif vix < 18: score += 1
+    elif vix > 20: score -= 1
+    return round(max(0, min(10, score)), 1)
+
+def compute_execution(price, vix, direction, regime, edge):
+    if not price or edge < 3:
+        return None
+    daily_move = price * (vix / 100) * (1 / (252 ** 0.5))
+    mult = 1.5 if regime == "volatile" else 1.2 if regime == "trending" else 1.0
+    move = round(daily_move * mult)
+    sl_pct = 0.003
+    t1_pct = 0.004
+    t2_pct = 0.007
+    if direction == "bullish":
+        entry_low = round(price - move * 0.3)
+        entry_high = round(price)
+        sl = round(price * (1 - sl_pct))
+        t1 = round(price * (1 + t1_pct))
+        t2 = round(price * (1 + t2_pct))
+    else:
+        entry_low = round(price)
+        entry_high = round(price + move * 0.3)
+        sl = round(price * (1 + sl_pct))
+        t1 = round(price * (1 - t1_pct))
+        t2 = round(price * (1 - t2_pct))
+    rr = round(t1_pct / sl_pct, 1)
+    range_low = round(price - move)
+    range_high = round(price + move)
+    return {
+        "entry": str(entry_low) + " - " + str(entry_high),
+        "sl": str(sl),
+        "t1": str(t1),
+        "t2": str(t2),
+        "rr": "1:" + str(rr),
+        "range": str(range_low) + " - " + str(range_high)
+    }
+
+def build_drivers(f):
     drivers = []
     n = f["nifty_change"]
-    d1 = {}
-    d1["icon"] = "📊"
-    d1["tag"] = "pos" if n >= 0 else "neg"
-    d1["label"] = "Nifty " + ("up " if n >= 0 else "down ") + str(abs(round(n,2))) + "% | RSI " + str(round(f["nifty_rsi"],0))
-    d1["detail"] = str(round(f["nifty_change_1w"],2)) + "% weekly"
-    drivers.append(d1)
-    
-    nq = f["nasdaq_change"]
-    sp = f["sp500_change"]
-    d2 = {}
-    d2["icon"] = "📈" if nq >= 0 else "📉"
-    d2["tag"] = "pos" if nq >= 0 else "neg"
-    d2["label"] = "Nasdaq " + str(round(nq,2)) + "% | S&P " + str(round(sp,2)) + "%"
-    d2["detail"] = "US markets"
-    drivers.append(d2)
-    
-    nk = f["nikkei_change"]
-    hs = f["hangseng_change"]
-    d3 = {}
-    d3["icon"] = "🌏"
-    d3["tag"] = "pos" if (nk + hs) >= 0 else "neg"
-    d3["label"] = "Nikkei " + str(round(nk,2)) + "% | HangSeng " + str(round(hs,2)) + "%"
-    d3["detail"] = "Asian markets"
-    drivers.append(d3)
-    
+    drivers.append({"icon": "📊", "tag": "pos" if n >= 0 else "neg",
+        "label": "Nifty " + ("up " if n >= 0 else "down ") + str(abs(round(n,2))) + "% | RSI " + str(round(f["nifty_rsi"],0)),
+        "detail": str(round(f["nifty_change_1w"],2)) + "% weekly", "impact": "HIGH"})
+    nq = f["nasdaq_change"]; sp = f["sp500_change"]
+    drivers.append({"icon": "📈" if nq >= 0 else "📉", "tag": "pos" if nq >= 0 else "neg",
+        "label": "Nasdaq " + str(round(nq,2)) + "% | S&P " + str(round(sp,2)) + "%",
+        "detail": "US markets", "impact": "MEDIUM"})
+    nk = f["nikkei_change"]; hs = f["hangseng_change"]
+    drivers.append({"icon": "🌏", "tag": "pos" if (nk+hs)>=0 else "neg",
+        "label": "Nikkei " + str(round(nk,2)) + "% | HangSeng " + str(round(hs,2)) + "%",
+        "detail": "Asian markets", "impact": "LOW"})
     fx = f["usd_inr_change"]
-    d4 = {}
-    d4["icon"] = "💱"
-    d4["tag"] = "neg" if fx > 0.2 else "pos"
-    d4["label"] = "INR " + ("weakening" if fx > 0.2 else "stable")
-    d4["detail"] = "USD/INR " + str(round(fx,2)) + "%"
-    drivers.append(d4)
-    
+    drivers.append({"icon": "💱", "tag": "neg" if fx > 0.2 else "pos",
+        "label": "INR " + ("weakening" if fx > 0.2 else "stable"),
+        "detail": "USD/INR " + str(round(fx,2)) + "%", "impact": "MEDIUM"})
     cr = f["crude_change"]
-    d5 = {}
-    d5["icon"] = "🛢"
-    d5["tag"] = "neg" if cr > 1 else "pos"
-    d5["label"] = "Crude " + ("rising" if cr > 1 else "stable")
-    d5["detail"] = str(round(cr,2)) + "%"
-    drivers.append(d5)
-    
+    drivers.append({"icon": "🛢", "tag": "neg" if cr > 1 else "pos",
+        "label": "Crude " + ("rising" if cr > 1 else "stable"),
+        "detail": str(round(cr,2)) + "%", "impact": "HIGH"})
     vix = f["india_vix"]
-    d6 = {}
-    d6["icon"] = "⚡" if vix > 18 else "😌"
-    d6["tag"] = "neg" if vix > 18 else "pos"
-    d6["label"] = "India VIX " + str(round(vix,1)) + " | US VIX " + str(round(f["us_vix"],1))
-    d6["detail"] = "elevated" if vix > 18 else "calm"
-    drivers.append(d6)
-    
-    if pcr_data and pcr_data.get("pcr"):
-        d7 = {}
-        d7["icon"] = "⚖️"
-        d7["tag"] = "pos" if pcr_data["signal"] == "bullish" else ("neg" if pcr_data["signal"] == "bearish" else "pos")
-        d7["label"] = "PCR: " + str(pcr_data["pcr"]) + " — " + pcr_data["signal"].upper()
-        d7["detail"] = pcr_data["detail"]
-        drivers.append(d7)
+    drivers.append({"icon": "⚡" if vix > 18 else "😌", "tag": "neg" if vix > 18 else "pos",
+        "label": "India VIX " + str(round(vix,1)) + " | US VIX " + str(round(f["us_vix"],1)),
+        "detail": "elevated" if vix > 18 else "calm", "impact": "HIGH"})
     return drivers
 
-# ─── SIGNAL HISTORY ───────────────────────────────────────────
+def get_sparkline():
+    try:
+        t = yf.Ticker("^NSEI")
+        hist = t.history(period="1mo", interval="1d")
+        closes = hist["Close"].dropna().tail(20).tolist()
+        return [round(float(v), 2) for v in closes]
+    except Exception:
+        return []
+
+def run_backtest():
+    try:
+        t = yf.Ticker("^NSEI")
+        hist = t.history(period="3mo", interval="1d")
+        if hist.empty or len(hist) < 30:
+            return {"error": "Not enough data"}
+        close = hist["Close"].dropna()
+        correct = 0; total = 0; last_10 = []
+        for i in range(20, len(close) - 1):
+            current = float(close.iloc[i])
+            next_day = float(close.iloc[i + 1])
+            actual = "bullish" if next_day > current else "bearish"
+            delta = close.diff()
+            gain = delta.clip(lower=0).iloc[i-14:i].mean()
+            loss = -delta.clip(upper=0).iloc[i-14:i].mean()
+            rsi = 50.0
+            if loss and loss > 1e-6:
+                rsi = float(100 - (100 / (1 + gain / loss)))
+            sma20 = float(close.iloc[i-20:i].mean())
+            chg = float((current - float(close.iloc[i-1])) / float(close.iloc[i-1]) * 100)
+            chg5 = float((current - float(close.iloc[i-5])) / float(close.iloc[i-5]) * 100)
+            score = 0.5
+            score += 0.25 * max(-1, min(1, chg / 3.0))
+            score += 0.10 * max(-1, min(1, chg5 / 5.0))
+            if rsi < 35: score += 0.10
+            elif rsi > 65: score -= 0.10
+            score += 0.08 if current > sma20 else -0.08
+            score = max(0.05, min(0.95, score))
+            predicted = "bullish" if score > 0.5 else "bearish"
+            if predicted == actual: correct += 1
+            total += 1
+            if i >= len(close) - 11:
+                row = {}
+                row["date"] = hist.index[i].strftime("%Y-%m-%d")
+                row["predicted"] = predicted; row["actual"] = actual
+                row["correct"] = predicted == actual; row["confidence"] = round(score * 100, 1)
+                last_10.append(row)
+        accuracy = round(correct / total * 100, 1) if total > 0 else 0
+        return {"accuracy": accuracy, "total_days": total, "correct": correct,
+                "last_10": last_10, "summary": "Model correct " + str(accuracy) + "% over 3 months"}
+    except Exception as e:
+        traceback.print_exc(); return {"error": str(e)}
+
+# HISTORY
 
 def load_history():
     try:
@@ -356,7 +374,7 @@ def load_history():
         pass
     return []
 
-def save_signal_history(signal, nifty_price, regime):
+def save_signal_history(signal, nifty_price, regime, edge):
     try:
         history = load_history()
         entry = {}
@@ -366,6 +384,7 @@ def save_signal_history(signal, nifty_price, regime):
         entry["confidence"] = signal.get("confidence", 0)
         entry["nifty_price"] = nifty_price
         entry["regime"] = regime
+        entry["edge"] = edge
         history.append(entry)
         history = history[-50:]
         with open(SIGNAL_HISTORY_FILE, "w") as f:
@@ -396,7 +415,7 @@ def evaluate_history():
         print("History eval error: " + str(e))
         return []
 
-# ─── PRICE ALERTS ─────────────────────────────────────────────
+# PRICE ALERTS
 
 def load_alerts():
     try:
@@ -428,9 +447,13 @@ def check_price_alerts(nifty_price):
         elif direction == "below" and nifty_price <= level:
             triggered = True
         if triggered:
-            msg = "🚨 NIFTY PRICE ALERT\n\n"
-            msg += "Nifty " + direction + " " + str(level) + " triggered!\n"
-            msg += "Current: " + str(nifty_price) + "\n"
+            msg = "🚨 NIFTY PRICE ALERT
+
+"
+            msg += "Nifty " + direction + " " + str(level) + " triggered!
+"
+            msg += "Current: " + str(nifty_price) + "
+"
             msg += "Time: " + datetime.now().strftime("%d %b %Y %H:%M IST")
             send_telegram(msg)
         else:
@@ -438,112 +461,33 @@ def check_price_alerts(nifty_price):
     if len(remaining) != len(alerts):
         save_alerts(remaining)
 
-# ─── BACKTEST ─────────────────────────────────────────────────
+# STATE TRACKING (for change alerts)
 
-def run_backtest():
+def load_state():
     try:
-        t = yf.Ticker("^NSEI")
-        hist = t.history(period="3mo", interval="1d")
-        if hist.empty or len(hist) < 30:
-            return {"error": "Not enough data"}
-        close = hist["Close"].dropna()
-        correct = 0
-        total = 0
-        last_10 = []
-        for i in range(20, len(close) - 1):
-            current = float(close.iloc[i])
-            next_day = float(close.iloc[i + 1])
-            actual = "bullish" if next_day > current else "bearish"
-            delta = close.diff()
-            gain = delta.clip(lower=0).iloc[i-14:i].mean()
-            loss = -delta.clip(upper=0).iloc[i-14:i].mean()
-            rsi = 50.0
-            if loss and loss > 1e-6:
-                rsi = float(100 - (100 / (1 + gain / loss)))
-            sma20 = float(close.iloc[i-20:i].mean())
-            chg = float((current - float(close.iloc[i-1])) / float(close.iloc[i-1]) * 100)
-            chg5 = float((current - float(close.iloc[i-5])) / float(close.iloc[i-5]) * 100)
-            score = 0.5
-            score += 0.25 * max(-1, min(1, chg / 3.0))
-            score += 0.10 * max(-1, min(1, chg5 / 5.0))
-            if rsi < 35:
-                score += 0.10
-            elif rsi > 65:
-                score -= 0.10
-            score += 0.08 if current > sma20 else -0.08
-            score = max(0.05, min(0.95, score))
-            predicted = "bullish" if score > 0.5 else "bearish"
-            if predicted == actual:
-                correct += 1
-            total += 1
-            if i >= len(close) - 11:
-                row = {}
-                row["date"] = hist.index[i].strftime("%Y-%m-%d")
-                row["predicted"] = predicted
-                row["actual"] = actual
-                row["correct"] = predicted == actual
-                row["confidence"] = round(score * 100, 1)
-                last_10.append(row)
-        accuracy = round(correct / total * 100, 1) if total > 0 else 0
-        return {"accuracy": accuracy, "total_days": total, "correct": correct,
-                "last_10": last_10, "summary": "Model correct " + str(accuracy) + "% over 3 months"}
-    except Exception as e:
-        traceback.print_exc()
-        return {"error": str(e)}
-
-def get_sparkline():
-    try:
-        t = yf.Ticker("^NSEI")
-        hist = t.history(period="1mo", interval="1d")
-        closes = hist["Close"].dropna().tail(20).tolist()
-        return [round(float(v), 2) for v in closes]
+        if os.path.exists(STATE_FILE):
+            with open(STATE_FILE, "r") as f:
+                return json.load(f)
     except Exception:
-        return []
+        pass
+    return {}
 
-# ─── TELEGRAM ─────────────────────────────────────────────────
+def save_state(state):
+    try:
+        with open(STATE_FILE, "w") as f:
+            json.dump(state, f)
+    except Exception as e:
+        print("State save error: " + str(e))
 
-def build_telegram_msg(data, session):
-    sig = data.get("signal", {})
-    mkt = data.get("market", {})
-    drivers = data.get("drivers", [])
-    regime = data.get("regime", "range")
-    ml = data.get("ml", {})
-    pcr = data.get("pcr", {})
-    direction = sig.get("direction", "neutral").upper()
-    confidence = sig.get("confidence", 0)
-    nifty = mkt.get("nifty", {})
-    price = nifty.get("price", 0) or 0
-    chg = nifty.get("change_pct", 0) or 0
-    rsi = nifty.get("rsi", 0) or 0
-    india_vix = mkt.get("india_vix", {}).get("price", 0) or 0
-    sig_emoji = "🟢" if direction == "BULLISH" else ("🔴" if direction == "BEARISH" else "🟡")
-    regime_map = {}
-    regime_map["volatile"]   = "HIGH VOL"
-    regime_map["trending"]   = "TRENDING"
-    regime_map["oversold"]   = "OVERSOLD"
-    regime_map["overbought"] = "OVERBOUGHT"
-    regime_map["range"]      = "RANGE"
-    regime_text = regime_map.get(regime, regime.upper())
-    arrow = "up" if chg >= 0 else "down"
-    session_text = "MORNING" if session == "morning" else "EVENING"
-    date_str = datetime.now().strftime("%d %b %Y")
-    driver_lines = ""
-    for d in drivers[:4]:
-        driver_lines += d.get("icon","") + " " + d.get("label","") + "\n"
-    msg = "Nifty AI v3.0\n"
-    msg += session_text + " | " + date_str + "\n\n"
-    msg += "Nifty: " + str(price) + " (" + arrow + " " + str(abs(chg)) + "%)\n"
-    msg += "RSI: " + str(rsi) + " | VIX: " + str(india_vix) + "\n"
-    if pcr.get("pcr"):
-        msg += "PCR: " + str(pcr["pcr"]) + " | " + pcr.get("signal","").upper() + "\n"
-    msg += "Regime: " + regime_text + "\n"
-    msg += "Signal: " + direction + " (" + str(confidence) + "%)\n"
-    if ml and ml.get("probability"):
-        msg += "ML Model: " + str(round(ml["probability"]*100,1)) + "% bull prob\n"
-    msg += "\nDrivers:\n" + driver_lines
-    msg += "\nDashboard: " + DASHBOARD_URL + "\n"
-    msg += "Not financial advice"
-    return msg
+def get_trade_state(edge):
+    if edge >= 6:
+        return "TRADE_READY"
+    elif edge >= 3:
+        return "SETUP_FORMING"
+    else:
+        return "NO_TRADE"
+
+# TELEGRAM DECISION MESSAGES
 
 def send_telegram(message):
     if not TELEGRAM_TOKEN or not CHAT_ID:
@@ -558,11 +502,316 @@ def send_telegram(message):
     except Exception as e:
         return False, str(e)
 
-# ─── ROUTES ───────────────────────────────────────────────────
+def build_reason_lines(f, regime, vix, rsi):
+    reasons = []
+    if vix > 20:
+        reasons.append("VIX at " + str(round(vix,1)) + " - high volatility, risk elevated")
+    elif vix > 18:
+        reasons.append("VIX at " + str(round(vix,1)) + " - volatility elevated, caution needed")
+    else:
+        reasons.append("VIX at " + str(round(vix,1)) + " - market calm")
+    if rsi > 70:
+        reasons.append("RSI at " + str(round(rsi,1)) + " - overbought, upside limited")
+    elif rsi > 65:
+        reasons.append("RSI at " + str(round(rsi,1)) + " - approaching overbought zone")
+    elif rsi < 30:
+        reasons.append("RSI at " + str(round(rsi,1)) + " - oversold, bounce possible")
+    elif rsi < 35:
+        reasons.append("RSI at " + str(round(rsi,1)) + " - approaching oversold zone")
+    else:
+        reasons.append("RSI at " + str(round(rsi,1)) + " - neutral zone")
+    nq = f.get("nasdaq_change", 0)
+    if nq > 1:
+        reasons.append("Nasdaq up " + str(round(nq,1)) + "% - global tailwind")
+    elif nq < -1:
+        reasons.append("Nasdaq down " + str(round(abs(nq),1)) + "% - global headwind")
+    cr = f.get("crude_change", 0)
+    if cr > 2:
+        reasons.append("Crude up " + str(round(cr,1)) + "% - inflation risk")
+    return reasons
+
+def build_no_trade_msg(data, session):
+    sig = data.get("signal", {}); mkt = data.get("market", {})
+    f = data.get("features", {}); edge = data.get("edge", 0)
+    nifty = mkt.get("nifty", {}); price = nifty.get("price", 0) or 0
+    chg = nifty.get("change_pct", 0) or 0; rsi = nifty.get("rsi", 0) or 0
+    vix = (mkt.get("india_vix", {}) or {}).get("price", 0) or 0
+    regime = data.get("regime", "range")
+    arrow = "+" if chg >= 0 else ""
+    session_text = "MORNING" if session == "morning" else "EVENING"
+    date_str = datetime.now().strftime("%d %b %Y")
+    reasons = build_reason_lines(f, regime, vix, rsi)
+    reason_block = ""
+    for r in reasons[:3]:
+        reason_block += "- " + r + "
+"
+    msg = "🧠 NIFTY AI - INTRADAY DECISION
+"
+    msg += session_text + " | " + date_str + "
+
+"
+    msg += "🚫 NO TRADE ZONE
+"
+    msg += "Edge: " + str(edge) + " / 10 | Confidence: LOW
+
+"
+    msg += "Reason:
+" + reason_block + "
+"
+    msg += "Action:
+"
+    msg += "- Stay in cash
+"
+    msg += "- Wait for edge > 3
+"
+    msg += "- Check again at next signal
+
+"
+    msg += "Nifty: " + str(price) + " (" + arrow + str(chg) + "%)
+"
+    msg += "Dashboard: " + DASHBOARD_URL
+    return msg
+
+def build_setup_forming_msg(data, session):
+    sig = data.get("signal", {}); mkt = data.get("market", {})
+    f = data.get("features", {}); edge = data.get("edge", 0)
+    nifty = mkt.get("nifty", {}); price = nifty.get("price", 0) or 0
+    chg = nifty.get("change_pct", 0) or 0; rsi = nifty.get("rsi", 0) or 0
+    vix = (mkt.get("india_vix", {}) or {}).get("price", 0) or 0
+    direction = sig.get("direction", "neutral").upper()
+    conf = sig.get("confidence", 0)
+    arrow = "+" if chg >= 0 else ""
+    session_text = "MORNING" if session == "morning" else "EVENING"
+    date_str = datetime.now().strftime("%d %b %Y")
+    msg = "🧠 NIFTY AI - INTRADAY DECISION
+"
+    msg += session_text + " | " + date_str + "
+
+"
+    msg += "⚠️ SETUP FORMING
+"
+    msg += "Edge: " + str(edge) + " / 10 | Bias: " + direction + "
+
+"
+    msg += "Market improving - not ready yet
+"
+    msg += "Watch for:
+"
+    if direction == "BULLISH":
+        msg += "- Pullback to support for entry
+"
+        msg += "- VIX below 16 for confirmation
+"
+        msg += "- Volume spike on bounce
+"
+    else:
+        msg += "- Rally to resistance for short entry
+"
+        msg += "- VIX staying elevated
+"
+        msg += "- Weak global cues
+"
+    msg += "
+Do NOT trade yet - wait for edge > 6
+
+"
+    msg += "Nifty: " + str(price) + " (" + arrow + str(chg) + "%)
+"
+    msg += "RSI: " + str(rsi) + " | VIX: " + str(vix) + "
+"
+    msg += "Dashboard: " + DASHBOARD_URL
+    return msg
+
+def build_trade_ready_msg(data, session):
+    sig = data.get("signal", {}); mkt = data.get("market", {})
+    f = data.get("features", {}); edge = data.get("edge", 0)
+    exec_plan = data.get("execution", {})
+    nifty = mkt.get("nifty", {}); price = nifty.get("price", 0) or 0
+    chg = nifty.get("change_pct", 0) or 0; rsi = nifty.get("rsi", 0) or 0
+    vix = (mkt.get("india_vix", {}) or {}).get("price", 0) or 0
+    direction = sig.get("direction", "neutral").upper()
+    conf = sig.get("confidence", 0)
+    regime = data.get("regime", "range")
+    arrow = "+" if chg >= 0 else ""
+    session_text = "MORNING" if session == "morning" else "EVENING"
+    date_str = datetime.now().strftime("%d %b %Y")
+    dir_emoji = "📈" if direction == "BULLISH" else "📉"
+    msg = "🧠 NIFTY AI - INTRADAY DECISION
+"
+    msg += session_text + " | " + date_str + "
+
+"
+    msg += "🔥 TRADE READY
+"
+    msg += "Edge: " + str(edge) + " / 10 | " + dir_emoji + " " + direction + "
+"
+    msg += "Confidence: " + str(conf) + "%
+
+"
+    if exec_plan:
+        msg += "EXECUTION PLAN (INTRADAY):
+"
+        msg += "Entry: " + str(exec_plan.get("entry", "—")) + "
+"
+        msg += "Stop Loss: " + str(exec_plan.get("sl", "—")) + "
+"
+        msg += "Target 1: " + str(exec_plan.get("t1", "—")) + "
+"
+        msg += "Target 2: " + str(exec_plan.get("t2", "—")) + "
+"
+        msg += "Risk:Reward: " + str(exec_plan.get("rr", "—")) + "
+"
+        msg += "Today Range: " + str(exec_plan.get("range", "—")) + "
+
+"
+    msg += "Rules:
+"
+    msg += "- Exit at Target 1 partially
+"
+    msg += "- Move SL to entry after T1 hit
+"
+    msg += "- Exit all by 3:15 PM IST
+"
+    msg += "- Not financial advice
+
+"
+    msg += "Nifty: " + str(price) + " (" + arrow + str(chg) + "%)
+"
+    msg += "Dashboard: " + DASHBOARD_URL
+    return msg
+
+def build_daily_review_msg(data):
+    sig = data.get("signal", {}); mkt = data.get("market", {})
+    edge = data.get("edge", 0); regime = data.get("regime", "range")
+    nifty = mkt.get("nifty", {}); price = nifty.get("price", 0) or 0
+    chg = nifty.get("change_pct", 0) or 0; rsi = nifty.get("rsi", 0) or 0
+    vix = (mkt.get("india_vix", {}) or {}).get("price", 0) or 0
+    direction = sig.get("direction", "neutral")
+    trade_state = get_trade_state(edge)
+    date_str = datetime.now().strftime("%d %b %Y")
+    regime_map = {"volatile":"High Volatility","trending":"Trending","oversold":"Oversold","overbought":"Overbought","range":"Range Bound"}
+    regime_text = regime_map.get(regime, regime.title())
+    arrow = "+" if chg >= 0 else ""
+    msg = "📊 NIFTY AI - DAILY REVIEW
+"
+    msg += date_str + "
+
+"
+    msg += "Nifty: " + str(price) + " (" + arrow + str(chg) + "%)
+"
+    msg += "VIX: " + str(vix) + " | RSI: " + str(rsi) + "
+"
+    msg += "Regime: " + regime_text + "
+
+"
+    if trade_state == "NO_TRADE":
+        msg += "Today Decision: NO TRADE
+"
+        msg += "Edge: " + str(edge) + " / 10
+
+"
+        msg += "Market Type:
+"
+        if vix > 18:
+            msg += "- High VIX (" + str(vix) + ") = risky environment
+"
+        if rsi > 65:
+            msg += "- Overbought RSI = upside limited
+"
+        elif rsi < 35:
+            msg += "- Oversold RSI = downside limited
+"
+        msg += "
+Lesson: Correct decision = NO TRADE
+"
+        msg += "Avoiding bad setups = protecting capital
+"
+    elif trade_state == "SETUP_FORMING":
+        msg += "Today Decision: WATCHED, NOT TRADED
+"
+        msg += "Edge: " + str(edge) + " / 10 (below threshold)
+
+"
+        msg += "Lesson: Patience pays
+"
+        msg += "Setup was forming but not ready
+"
+    else:
+        msg += "Today Decision: TRADE SIGNAL ISSUED
+"
+        msg += "Bias: " + direction.upper() + "
+"
+        msg += "Edge: " + str(edge) + " / 10
+
+"
+        msg += "Check Dashboard for results
+"
+    msg += "
+Dashboard: " + DASHBOARD_URL
+    return msg
+
+def build_state_change_msg(old_state, new_state, data):
+    edge = data.get("edge", 0)
+    sig = data.get("signal", {}); mkt = data.get("market", {})
+    nifty = mkt.get("nifty", {}); price = nifty.get("price", 0) or 0
+    direction = sig.get("direction", "neutral").upper()
+    date_str = datetime.now().strftime("%d %b %Y %H:%M")
+    if old_state == "NO_TRADE" and new_state == "SETUP_FORMING":
+        msg = "⚠️ STATE CHANGE ALERT
+" + date_str + "
+
+"
+        msg += "NO TRADE → SETUP FORMING
+"
+        msg += "Edge: " + str(edge) + " / 10
+"
+        msg += "Bias: " + direction + "
+
+"
+        msg += "Market conditions improving
+"
+        msg += "Monitor closely - do not trade yet
+"
+        msg += "Nifty: " + str(price) + "
+"
+        msg += "Dashboard: " + DASHBOARD_URL
+    elif new_state == "TRADE_READY":
+        msg = "🔥 TRADE READY ALERT
+" + date_str + "
+
+"
+        msg += "Edge crossed 6 / 10
+"
+        msg += "Bias: " + direction + " | Edge: " + str(edge) + "
+
+"
+        msg += "Check Dashboard for full execution plan
+"
+        msg += "Dashboard: " + DASHBOARD_URL
+    elif old_state == "TRADE_READY" and new_state != "TRADE_READY":
+        msg = "🚨 SETUP CHANGED
+" + date_str + "
+
+"
+        msg += "Trade setup no longer valid
+"
+        msg += "Edge dropped to: " + str(edge) + " / 10
+"
+        msg += "New State: " + new_state.replace("_"," ") + "
+
+"
+        msg += "Exit or tighten stops if in trade
+"
+        msg += "Dashboard: " + DASHBOARD_URL
+    else:
+        return None
+    return msg
+
+# ROUTES
 
 @app.route("/", methods=["GET"])
 def index():
-    return jsonify({"name": "Nifty AI", "version": "3.0", "status": "running"})
+    return jsonify({"name": "Nifty AI", "version": "5.0", "status": "running"})
 
 @app.route("/health", methods=["GET"])
 def health():
@@ -574,20 +823,33 @@ def api_signal():
         market = {}
         for name in TICKERS:
             market[name] = get_cached(TICKERS[name])
-            
         feats = compute_features(market)
         regime = detect_regime(feats)
-
-        pcr_data = fetch_pcr()
-        ml_result = train_and_predict(feats)
-        signal = compute_signal(feats, regime, ml_result, pcr_data)
-        drivers = build_drivers(feats, pcr_data)
+        signal = compute_signal(feats, regime)
+        drivers = build_drivers(feats)
         sparkline = get_sparkline()
-
-        nifty_price = market.get("nifty", {}).get("price")
-        save_signal_history(signal, nifty_price, regime)
+        direction = signal.get("direction", "neutral")
+        conf = signal.get("confidence", 50)
+        rsi = market.get("nifty", {}).get("rsi", 50) or 50
+        vix = (market.get("india_vix", {}) or {}).get("price", 14) or 14
+        edge = compute_edge(direction, conf, regime, rsi, vix)
+        nifty_price = (market.get("nifty", {}) or {}).get("price")
+        exec_plan = compute_execution(nifty_price, vix, direction, regime, edge)
+        pcr_data = get_cached_pcr()
+        save_signal_history(signal, nifty_price, regime, edge)
         check_price_alerts(nifty_price)
-
+        trade_state = get_trade_state(edge)
+        last_state = load_state()
+        old_trade_state = last_state.get("trade_state", "NO_TRADE")
+        if old_trade_state != trade_state:
+            full_data = {}
+            full_data["signal"] = signal; full_data["market"] = market
+            full_data["regime"] = regime; full_data["edge"] = edge
+            full_data["features"] = feats; full_data["execution"] = exec_plan
+            change_msg = build_state_change_msg(old_trade_state, trade_state, full_data)
+            if change_msg:
+                send_telegram(change_msg)
+        save_state({"trade_state": trade_state, "edge": edge, "timestamp": datetime.now().isoformat()})
         result = {}
         result["status"] = "ok"
         result["timestamp"] = datetime.now().isoformat()
@@ -595,8 +857,10 @@ def api_signal():
         result["regime"] = regime
         result["drivers"] = drivers
         result["sparkline"] = sparkline
+        result["edge"] = edge
+        result["trade_state"] = trade_state
+        result["execution"] = exec_plan
         result["pcr"] = pcr_data
-        result["ml"] = ml_result
         mkt = {}
         mkt["nifty"]     = market["nifty"]
         mkt["banknifty"] = market["banknifty"]
@@ -638,8 +902,7 @@ def api_add_alert():
             return jsonify({"status": "error", "message": "level required"}), 400
         alerts = load_alerts()
         alert = {}
-        alert["level"] = level
-        alert["direction"] = direction
+        alert["level"] = level; alert["direction"] = direction
         alert["created"] = datetime.now().isoformat()
         alerts.append(alert)
         save_alerts(alerts)
@@ -661,14 +924,6 @@ def api_backtest():
         traceback.print_exc()
         return jsonify({"status": "error", "message": str(e)}), 500
 
-@app.route("/api/pcr", methods=["GET"])
-def api_pcr():
-    try:
-        pcr_data = fetch_pcr()
-        return jsonify({"status": "ok", "timestamp": datetime.now().isoformat(), "pcr": pcr_data})
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
-
 @app.route("/api/telegram", methods=["GET"])
 def api_telegram():
     try:
@@ -678,21 +933,52 @@ def api_telegram():
             market[name] = get_cached(TICKERS[name])
         feats = compute_features(market)
         regime = detect_regime(feats)
-        pcr_data = fetch_pcr()
-        ml_result = train_and_predict(feats)
-        signal = compute_signal(feats, regime, ml_result, pcr_data)
-        drivers = build_drivers(feats, pcr_data)
+        signal = compute_signal(feats, regime)
+        direction = signal.get("direction","neutral")
+        conf = signal.get("confidence",50)
+        rsi = (market.get("nifty",{}) or {}).get("rsi",50) or 50
+        vix = (market.get("india_vix",{}) or {}).get("price",14) or 14
+        edge = compute_edge(direction, conf, regime, rsi, vix)
+        exec_plan = compute_execution((market.get("nifty",{}) or {}).get("price"), vix, direction, regime, edge)
+        trade_state = get_trade_state(edge)
         data = {}
-        data["signal"] = signal
-        data["regime"] = regime
-        data["drivers"] = drivers
-        data["market"] = market
-        data["pcr"] = pcr_data
-        data["ml"] = ml_result
-        message = build_telegram_msg(data, session)
-        ok, res = send_telegram(message)
+        data["signal"] = signal; data["market"] = market; data["regime"] = regime
+        data["edge"] = edge; data["features"] = feats; data["execution"] = exec_plan
+        if trade_state == "TRADE_READY":
+            msg = build_trade_ready_msg(data, session)
+        elif trade_state == "SETUP_FORMING":
+            msg = build_setup_forming_msg(data, session)
+        else:
+            msg = build_no_trade_msg(data, session)
+        ok, res = send_telegram(msg)
         if ok:
-            return jsonify({"status": "ok", "message": "Sent"})
+            return jsonify({"status": "ok", "message": "Sent", "trade_state": trade_state, "edge": edge})
+        return jsonify({"status": "error", "message": res}), 500
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route("/api/telegram/review", methods=["GET"])
+def api_telegram_review():
+    try:
+        market = {}
+        for name in TICKERS:
+            market[name] = get_cached(TICKERS[name])
+        feats = compute_features(market)
+        regime = detect_regime(feats)
+        signal = compute_signal(feats, regime)
+        direction = signal.get("direction","neutral")
+        conf = signal.get("confidence",50)
+        rsi = (market.get("nifty",{}) or {}).get("rsi",50) or 50
+        vix = (market.get("india_vix",{}) or {}).get("price",14) or 14
+        edge = compute_edge(direction, conf, regime, rsi, vix)
+        data = {}
+        data["signal"] = signal; data["market"] = market
+        data["regime"] = regime; data["edge"] = edge; data["features"] = feats
+        msg = build_daily_review_msg(data)
+        ok, res = send_telegram(msg)
+        if ok:
+            return jsonify({"status": "ok", "message": "Daily review sent"})
         return jsonify({"status": "error", "message": res}), 500
     except Exception as e:
         traceback.print_exc()
@@ -700,10 +986,25 @@ def api_telegram():
 
 @app.route("/api/telegram/test", methods=["GET"])
 def api_telegram_test():
-    ok, res = send_telegram("Nifty AI v3.0 connected! PCR + ML + Alerts + History all active.")
+    msg = "Nifty AI v5.0 Decision Bot connected!\n\n"
+    msg += "Messages now:\n"
+    msg += "- NO TRADE ZONE\n"
+    msg += "- SETUP FORMING\n"
+    msg += "- TRADE READY\n"
+    msg += "- State change alerts\n"
+    msg += "- Daily review at close"
+    ok, res = send_telegram(msg)
     if ok:
         return jsonify({"status": "ok"})
     return jsonify({"status": "error", "message": res}), 500
+
+@app.route("/api/pcr", methods=["GET"])
+def api_pcr():
+    try:
+        pcr_data = get_cached_pcr()
+        return jsonify({"status": "ok", "timestamp": datetime.now().isoformat(), "pcr": pcr_data})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 @app.route("/api/data", methods=["GET"])
 def api_data():
