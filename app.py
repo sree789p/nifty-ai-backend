@@ -659,8 +659,7 @@ def build_daily_review_msg(data):
         msg += "Bias: " + direction.upper() + " "
         msg += "Edge: " + str(edge) + " / 10 "
         msg += "Check Dashboard for results"
-    msg += "
-Dashboard: " + DASHBOARD_URL
+    msg += "Dashboard: " + DASHBOARD_URL
     return msg
 
 def build_state_change_msg(old_state, new_state, data):
