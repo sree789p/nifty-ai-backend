@@ -447,13 +447,9 @@ def check_price_alerts(nifty_price):
         elif direction == "below" and nifty_price <= level:
             triggered = True
         if triggered:
-            msg = "🚨 NIFTY PRICE ALERT
-
-"
-            msg += "Nifty " + direction + " " + str(level) + " triggered!
-"
-            msg += "Current: " + str(nifty_price) + "
-"
+            msg = "🚨 NIFTY PRICE ALERT\n\n"
+            msg += "Nifty " + direction + " " + str(level) + " triggered!\n"
+            msg += "Current: " + str(nifty_price) + "\n"
             msg += "Time: " + datetime.now().strftime("%d %b %Y %H:%M IST")
             send_telegram(msg)
         else:
@@ -543,32 +539,17 @@ def build_no_trade_msg(data, session):
     reasons = build_reason_lines(f, regime, vix, rsi)
     reason_block = ""
     for r in reasons[:3]:
-        reason_block += "- " + r + "
-"
-    msg = "🧠 NIFTY AI - INTRADAY DECISION
-"
-    msg += session_text + " | " + date_str + "
-
-"
-    msg += "🚫 NO TRADE ZONE
-"
-    msg += "Edge: " + str(edge) + " / 10 | Confidence: LOW
-
-"
-    msg += "Reason:
-" + reason_block + "
-"
-    msg += "Action:
-"
-    msg += "- Stay in cash
-"
-    msg += "- Wait for edge > 3
-"
-    msg += "- Check again at next signal
-
-"
-    msg += "Nifty: " + str(price) + " (" + arrow + str(chg) + "%)
-"
+        reason_block += "- " + r + "\n"
+    msg = "🧠 NIFTY AI - INTRADAY DECISION\n"
+    msg += session_text + " | " + date_str + "\n\n"
+    msg += "🚫 NO TRADE ZONE\n"
+    msg += "Edge: " + str(edge) + " / 10 | Confidence: LOW\n\n"
+    msg += "Reason:\n" + reason_block + "\n"
+    msg += "Action:\n"
+    msg += "- Stay in cash\n"
+    msg += "- Wait for edge > 3\n"
+    msg += "- Check again at next signal\n\n"
+    msg += "Nifty: " + str(price) + " (" + arrow + str(chg) + "%)\n"
     msg += "Dashboard: " + DASHBOARD_URL
     return msg
 
@@ -583,42 +564,23 @@ def build_setup_forming_msg(data, session):
     arrow = "+" if chg >= 0 else ""
     session_text = "MORNING" if session == "morning" else "EVENING"
     date_str = datetime.now().strftime("%d %b %Y")
-    msg = "🧠 NIFTY AI - INTRADAY DECISION
-"
-    msg += session_text + " | " + date_str + "
-
-"
-    msg += "⚠️ SETUP FORMING
-"
-    msg += "Edge: " + str(edge) + " / 10 | Bias: " + direction + "
-
-"
-    msg += "Market improving - not ready yet
-"
-    msg += "Watch for:
-"
+    msg = "🧠 NIFTY AI - INTRADAY DECISION\n"
+    msg += session_text + " | " + date_str + "\n\n"
+    msg += "⚠️ SETUP FORMING\n"
+    msg += "Edge: " + str(edge) + " / 10 | Bias: " + direction + "\n\n"
+    msg += "Market improving - not ready yet\n"
+    msg += "Watch for:\n"
     if direction == "BULLISH":
-        msg += "- Pullback to support for entry
-"
-        msg += "- VIX below 16 for confirmation
-"
-        msg += "- Volume spike on bounce
-"
+        msg += "- Pullback to support for entry\n"
+        msg += "- VIX below 16 for confirmation\n"
+        msg += "- Volume spike on bounce\n"
     else:
-        msg += "- Rally to resistance for short entry
-"
-        msg += "- VIX staying elevated
-"
-        msg += "- Weak global cues
-"
-    msg += "
-Do NOT trade yet - wait for edge > 6
-
-"
-    msg += "Nifty: " + str(price) + " (" + arrow + str(chg) + "%)
-"
-    msg += "RSI: " + str(rsi) + " | VIX: " + str(vix) + "
-"
+        msg += "- Rally to resistance for short entry\n"
+        msg += "- VIX staying elevated\n"
+        msg += "- Weak global cues\n"
+    msg += "\nDo NOT trade yet - wait for edge > 6\n\n"
+    msg += "Nifty: " + str(price) + " (" + arrow + str(chg) + "%)\n"
+    msg += "RSI: " + str(rsi) + " | VIX: " + str(vix) + "\n"
     msg += "Dashboard: " + DASHBOARD_URL
     return msg
 
@@ -636,47 +598,25 @@ def build_trade_ready_msg(data, session):
     session_text = "MORNING" if session == "morning" else "EVENING"
     date_str = datetime.now().strftime("%d %b %Y")
     dir_emoji = "📈" if direction == "BULLISH" else "📉"
-    msg = "🧠 NIFTY AI - INTRADAY DECISION
-"
-    msg += session_text + " | " + date_str + "
-
-"
-    msg += "🔥 TRADE READY
-"
-    msg += "Edge: " + str(edge) + " / 10 | " + dir_emoji + " " + direction + "
-"
-    msg += "Confidence: " + str(conf) + "%
-
-"
+    msg = "🧠 NIFTY AI - INTRADAY DECISION\n"
+    msg += session_text + " | " + date_str + "\n\n"
+    msg += "🔥 TRADE READY\n"
+    msg += "Edge: " + str(edge) + " / 10 | " + dir_emoji + " " + direction + "\n"
+    msg += "Confidence: " + str(conf) + "%\n\n"
     if exec_plan:
-        msg += "EXECUTION PLAN (INTRADAY):
-"
-        msg += "Entry: " + str(exec_plan.get("entry", "—")) + "
-"
-        msg += "Stop Loss: " + str(exec_plan.get("sl", "—")) + "
-"
-        msg += "Target 1: " + str(exec_plan.get("t1", "—")) + "
-"
-        msg += "Target 2: " + str(exec_plan.get("t2", "—")) + "
-"
-        msg += "Risk:Reward: " + str(exec_plan.get("rr", "—")) + "
-"
-        msg += "Today Range: " + str(exec_plan.get("range", "—")) + "
-
-"
-    msg += "Rules:
-"
-    msg += "- Exit at Target 1 partially
-"
-    msg += "- Move SL to entry after T1 hit
-"
-    msg += "- Exit all by 3:15 PM IST
-"
-    msg += "- Not financial advice
-
-"
-    msg += "Nifty: " + str(price) + " (" + arrow + str(chg) + "%)
-"
+        msg += "EXECUTION PLAN (INTRADAY):\n"
+        msg += "Entry: " + str(exec_plan.get("entry", "—")) + "\n"
+        msg += "Stop Loss: " + str(exec_plan.get("sl", "—")) + "\n"
+        msg += "Target 1: " + str(exec_plan.get("t1", "—")) + "\n"
+        msg += "Target 2: " + str(exec_plan.get("t2", "—")) + "\n"
+        msg += "Risk:Reward: " + str(exec_plan.get("rr", "—")) + "\n"
+        msg += "Today Range: " + str(exec_plan.get("range", "—")) + "\n\n"
+    msg += "Rules:\n"
+    msg += "- Exit at Target 1 partially\n"
+    msg += "- Move SL to entry after T1 hit\n"
+    msg += "- Exit all by 3:15 PM IST\n"
+    msg += "- Not financial advice\n\n"
+    msg += "Nifty: " + str(price) + " (" + arrow + str(chg) + "%)\n"
     msg += "Dashboard: " + DASHBOARD_URL
     return msg
 
@@ -692,62 +632,34 @@ def build_daily_review_msg(data):
     regime_map = {"volatile":"High Volatility","trending":"Trending","oversold":"Oversold","overbought":"Overbought","range":"Range Bound"}
     regime_text = regime_map.get(regime, regime.title())
     arrow = "+" if chg >= 0 else ""
-    msg = "📊 NIFTY AI - DAILY REVIEW
-"
-    msg += date_str + "
-
-"
-    msg += "Nifty: " + str(price) + " (" + arrow + str(chg) + "%)
-"
-    msg += "VIX: " + str(vix) + " | RSI: " + str(rsi) + "
-"
-    msg += "Regime: " + regime_text + "
-
-"
+    msg = "📊 NIFTY AI - DAILY REVIEW\n"
+    msg += date_str + "\n\n"
+    msg += "Nifty: " + str(price) + " (" + arrow + str(chg) + "%)\n"
+    msg += "VIX: " + str(vix) + " | RSI: " + str(rsi) + "\n"
+    msg += "Regime: " + regime_text + "\n\n"
     if trade_state == "NO_TRADE":
-        msg += "Today Decision: NO TRADE
-"
-        msg += "Edge: " + str(edge) + " / 10
-
-"
-        msg += "Market Type:
-"
+        msg += "Today Decision: NO TRADE\n"
+        msg += "Edge: " + str(edge) + " / 10\n\n"
+        msg += "Market Type:\n"
         if vix > 18:
-            msg += "- High VIX (" + str(vix) + ") = risky environment
-"
+            msg += "- High VIX (" + str(vix) + ") = risky environment\n"
         if rsi > 65:
-            msg += "- Overbought RSI = upside limited
-"
+            msg += "- Overbought RSI = upside limited\n"
         elif rsi < 35:
-            msg += "- Oversold RSI = downside limited
-"
-        msg += "
-Lesson: Correct decision = NO TRADE
-"
-        msg += "Avoiding bad setups = protecting capital
-"
+            msg += "- Oversold RSI = downside limited\n"
+        msg += "\nLesson: Correct decision = NO TRADE\n"
+        msg += "Avoiding bad setups = protecting capital\n"
     elif trade_state == "SETUP_FORMING":
-        msg += "Today Decision: WATCHED, NOT TRADED
-"
-        msg += "Edge: " + str(edge) + " / 10 (below threshold)
-
-"
-        msg += "Lesson: Patience pays
-"
-        msg += "Setup was forming but not ready
-"
+        msg += "Today Decision: WATCHED, NOT TRADED\n"
+        msg += "Edge: " + str(edge) + " / 10 (below threshold)\n\n"
+        msg += "Lesson: Patience pays\n"
+        msg += "Setup was forming but not ready\n"
     else:
-        msg += "Today Decision: TRADE SIGNAL ISSUED
-"
-        msg += "Bias: " + direction.upper() + "
-"
-        msg += "Edge: " + str(edge) + " / 10
-
-"
-        msg += "Check Dashboard for results
-"
-    msg += "
-Dashboard: " + DASHBOARD_URL
+        msg += "Today Decision: TRADE SIGNAL ISSUED\n"
+        msg += "Bias: " + direction.upper() + "\n"
+        msg += "Edge: " + str(edge) + " / 10\n\n"
+        msg += "Check Dashboard for results\n"
+    msg += "\nDashboard: " + DASHBOARD_URL
     return msg
 
 def build_state_change_msg(old_state, new_state, data):
@@ -757,51 +669,26 @@ def build_state_change_msg(old_state, new_state, data):
     direction = sig.get("direction", "neutral").upper()
     date_str = datetime.now().strftime("%d %b %Y %H:%M")
     if old_state == "NO_TRADE" and new_state == "SETUP_FORMING":
-        msg = "⚠️ STATE CHANGE ALERT
-" + date_str + "
-
-"
-        msg += "NO TRADE → SETUP FORMING
-"
-        msg += "Edge: " + str(edge) + " / 10
-"
-        msg += "Bias: " + direction + "
-
-"
-        msg += "Market conditions improving
-"
-        msg += "Monitor closely - do not trade yet
-"
-        msg += "Nifty: " + str(price) + "
-"
+        msg = "⚠️ STATE CHANGE ALERT\n" + date_str + "\n\n"
+        msg += "NO TRADE → SETUP FORMING\n"
+        msg += "Edge: " + str(edge) + " / 10\n"
+        msg += "Bias: " + direction + "\n\n"
+        msg += "Market conditions improving\n"
+        msg += "Monitor closely - do not trade yet\n"
+        msg += "Nifty: " + str(price) + "\n"
         msg += "Dashboard: " + DASHBOARD_URL
     elif new_state == "TRADE_READY":
-        msg = "🔥 TRADE READY ALERT
-" + date_str + "
-
-"
-        msg += "Edge crossed 6 / 10
-"
-        msg += "Bias: " + direction + " | Edge: " + str(edge) + "
-
-"
-        msg += "Check Dashboard for full execution plan
-"
+        msg = "🔥 TRADE READY ALERT\n" + date_str + "\n\n"
+        msg += "Edge crossed 6 / 10\n"
+        msg += "Bias: " + direction + " | Edge: " + str(edge) + "\n\n"
+        msg += "Check Dashboard for full execution plan\n"
         msg += "Dashboard: " + DASHBOARD_URL
     elif old_state == "TRADE_READY" and new_state != "TRADE_READY":
-        msg = "🚨 SETUP CHANGED
-" + date_str + "
-
-"
-        msg += "Trade setup no longer valid
-"
-        msg += "Edge dropped to: " + str(edge) + " / 10
-"
-        msg += "New State: " + new_state.replace("_"," ") + "
-
-"
-        msg += "Exit or tighten stops if in trade
-"
+        msg = "🚨 SETUP CHANGED\n" + date_str + "\n\n"
+        msg += "Trade setup no longer valid\n"
+        msg += "Edge dropped to: " + str(edge) + " / 10\n"
+        msg += "New State: " + new_state.replace("_"," ") + "\n\n"
+        msg += "Exit or tighten stops if in trade\n"
         msg += "Dashboard: " + DASHBOARD_URL
     else:
         return None
