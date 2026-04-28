@@ -34,7 +34,7 @@ TICKERS["gold"]      = "GC=F"
 TICKERS["vix"]       = "^VIX"
 TICKERS["india_vix"] = "^INDIAVIX"
 
-# DATA FETCH
+# ── DATA FETCH ────────────────────────────────────────────────
 
 def fetch_data(symbol):
     try:
@@ -66,7 +66,13 @@ def fetch_data(symbol):
         if len(close) >= 6:
             prev_week = float(close.iloc[-6])
             change_1w = round((price - prev_week) / prev_week * 100, 2)
-        return {"price": price, "change_pct": change_pct, "change_1w": change_1w, "rsi": rsi, "above_sma20": above_sma20}
+        return {
+            "price": price,
+            "change_pct": change_pct,
+            "change_1w": change_1w,
+            "rsi": rsi,
+            "above_sma20": above_sma20
+        }
     except Exception as e:
         print("fetch error " + symbol + ": " + str(e))
         return {"price": None, "change_pct": None, "rsi": 50.0, "above_sma20": 0, "change_1w": None}
@@ -81,64 +87,43 @@ def get_cached(symbol):
     CACHE[symbol] = (data, now)
     return data
 
-# PUT CALL RATIO via NSE public API
+# ── PCR via NSE ───────────────────────────────────────────────
+
+PCR_CACHE = {"data": None, "ts": 0}
 
 def fetch_pcr():
     try:
-        headers = {}
-        headers["User-Agent"] = "Mozilla/5.0"
-        headers["Accept"] = "application/json"
-        headers["Referer"] = "https://www.nseindia.com"
-
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Accept": "application/json",
+            "Referer": "https://www.nseindia.com"
+        }
         session = requests.Session()
         session.get("https://www.nseindia.com", headers=headers, timeout=10)
-
         url = "https://www.nseindia.com/api/option-chain-indices?symbol=NIFTY"
         res = session.get(url, headers=headers, timeout=15)
-
         if res.status_code != 200:
             return {"pcr": None, "signal": "neutral", "detail": "NSE API unavailable"}
-
         data = res.json()
         records = data.get("records", {}).get("data", [])
-
-        total_put_oi = 0
-        total_call_oi = 0
-
-        for record in records:
-            if "PE" in record:
-                total_put_oi += record["PE"].get("openInterest", 0)
-            if "CE" in record:
-                total_call_oi += record["CE"].get("openInterest", 0)
-
-        if total_call_oi == 0:
+        put_oi = sum(r.get("PE", {}).get("openInterest", 0) for r in records if "PE" in r)
+        call_oi = sum(r.get("CE", {}).get("openInterest", 0) for r in records if "CE" in r)
+        if call_oi == 0:
             return {"pcr": None, "signal": "neutral", "detail": "No OI data"}
-
-        pcr = round(total_put_oi / total_call_oi, 2)
-
+        pcr = round(put_oi / call_oi, 2)
         if pcr > 1.2:
             signal = "bullish"
-            detail = "High put OI — smart money hedged, support likely"
+            detail = "High put OI — smart money hedged"
         elif pcr < 0.8:
             signal = "bearish"
-            detail = "Low put OI — complacency, downside risk"
+            detail = "Low put OI — downside risk"
         else:
             signal = "neutral"
-            detail = "Balanced OI — no strong directional bias"
-
-        return {
-            "pcr": pcr,
-            "put_oi": int(total_put_oi),
-            "call_oi": int(total_call_oi),
-            "signal": signal,
-            "detail": detail
-        }
-
+            detail = "Balanced OI"
+        return {"pcr": pcr, "put_oi": int(put_oi), "call_oi": int(call_oi), "signal": signal, "detail": detail}
     except Exception as e:
         print("PCR error: " + str(e))
-        return {"pcr": None, "signal": "neutral", "detail": "PCR fetch failed"}
-
-PCR_CACHE = {"data": None, "ts": 0}
+        return {"pcr": None, "signal": "neutral", "detail": "PCR unavailable"}
 
 def get_cached_pcr():
     now = datetime.now().timestamp()
@@ -149,7 +134,7 @@ def get_cached_pcr():
     PCR_CACHE["ts"] = now
     return data
 
-# FEATURES
+# ── FEATURES ─────────────────────────────────────────────────
 
 def compute_features(market):
     def chg(key):
@@ -233,25 +218,50 @@ def compute_signal(f, regime):
         direction = "neutral"
     return {"direction": direction, "probability": round(score, 4), "confidence": round(score * 100, 1)}
 
+# ── EDGE SCORE (single source of truth) ──────────────────────
+
 def compute_edge(direction, conf, regime, rsi, vix):
     score = 0
-    if conf > 70: score += 3
-    elif conf > 62: score += 2
-    elif conf > 55: score += 1
-    if regime == "trending": score += 2
-    elif regime == "range": score += 1
-    elif regime == "volatile": score -= 1
-    if rsi < 35 and direction == "bullish": score += 2
-    elif rsi > 65 and direction == "bearish": score += 2
-    elif 40 < rsi < 60: score += 1
-    elif rsi > 70 or rsi < 30: score -= 1
-    if vix < 14: score += 2
-    elif vix < 18: score += 1
-    elif vix > 20: score -= 1
+    if conf > 70:
+        score += 3
+    elif conf > 62:
+        score += 2
+    elif conf > 55:
+        score += 1
+    if regime == "trending":
+        score += 2
+    elif regime == "range":
+        score += 1
+    elif regime == "volatile":
+        score -= 1
+    if rsi < 35 and direction == "bullish":
+        score += 2
+    elif rsi > 65 and direction == "bearish":
+        score += 2
+    elif 40 < rsi < 60:
+        score += 1
+    elif rsi > 72 or rsi < 28:
+        score -= 1
+    if vix < 14:
+        score += 2
+    elif vix < 18:
+        score += 1
+    elif vix > 20:
+        score -= 1
     return round(max(0, min(10, score)), 1)
 
-def compute_execution(price, vix, direction, regime, edge):
-    if not price or edge < 3:
+def get_trade_state(edge):
+    if edge >= 6:
+        return "TRADE_READY"
+    elif edge >= 3:
+        return "SETUP_FORMING"
+    else:
+        return "NO_TRADE"
+
+# ── EXECUTION PLAN — only when trade ready ───────────────────
+
+def compute_execution(price, vix, direction, regime):
+    if not price or not vix:
         return None
     daily_move = price * (vix / 100) * (1 / (252 ** 0.5))
     mult = 1.5 if regime == "volatile" else 1.2 if regime == "trending" else 1.0
@@ -286,29 +296,41 @@ def compute_execution(price, vix, direction, regime, edge):
 def build_drivers(f):
     drivers = []
     n = f["nifty_change"]
-    drivers.append({"icon": "📊", "tag": "pos" if n >= 0 else "neg",
+    drivers.append({
+        "icon": "📊", "tag": "pos" if n >= 0 else "neg", "impact": "HIGH",
         "label": "Nifty " + ("up " if n >= 0 else "down ") + str(abs(round(n,2))) + "% | RSI " + str(round(f["nifty_rsi"],0)),
-        "detail": str(round(f["nifty_change_1w"],2)) + "% weekly", "impact": "HIGH"})
+        "detail": str(round(f["nifty_change_1w"],2)) + "% weekly"
+    })
     nq = f["nasdaq_change"]; sp = f["sp500_change"]
-    drivers.append({"icon": "📈" if nq >= 0 else "📉", "tag": "pos" if nq >= 0 else "neg",
+    drivers.append({
+        "icon": "📈" if nq >= 0 else "📉", "tag": "pos" if nq >= 0 else "neg", "impact": "MEDIUM",
         "label": "Nasdaq " + str(round(nq,2)) + "% | S&P " + str(round(sp,2)) + "%",
-        "detail": "US markets", "impact": "MEDIUM"})
+        "detail": "US markets"
+    })
     nk = f["nikkei_change"]; hs = f["hangseng_change"]
-    drivers.append({"icon": "🌏", "tag": "pos" if (nk+hs)>=0 else "neg",
+    drivers.append({
+        "icon": "🌏", "tag": "pos" if (nk+hs) >= 0 else "neg", "impact": "LOW",
         "label": "Nikkei " + str(round(nk,2)) + "% | HangSeng " + str(round(hs,2)) + "%",
-        "detail": "Asian markets", "impact": "LOW"})
+        "detail": "Asian markets"
+    })
     fx = f["usd_inr_change"]
-    drivers.append({"icon": "💱", "tag": "neg" if fx > 0.2 else "pos",
+    drivers.append({
+        "icon": "💱", "tag": "neg" if fx > 0.2 else "pos", "impact": "MEDIUM",
         "label": "INR " + ("weakening" if fx > 0.2 else "stable"),
-        "detail": "USD/INR " + str(round(fx,2)) + "%", "impact": "MEDIUM"})
+        "detail": "USD/INR " + str(round(fx,2)) + "%"
+    })
     cr = f["crude_change"]
-    drivers.append({"icon": "🛢", "tag": "neg" if cr > 1 else "pos",
+    drivers.append({
+        "icon": "🛢", "tag": "neg" if cr > 1 else "pos", "impact": "HIGH",
         "label": "Crude " + ("rising" if cr > 1 else "stable"),
-        "detail": str(round(cr,2)) + "%", "impact": "HIGH"})
+        "detail": str(round(cr,2)) + "%"
+    })
     vix = f["india_vix"]
-    drivers.append({"icon": "⚡" if vix > 18 else "😌", "tag": "neg" if vix > 18 else "pos",
+    drivers.append({
+        "icon": "⚡" if vix > 18 else "😌", "tag": "neg" if vix > 18 else "pos", "impact": "HIGH",
         "label": "India VIX " + str(round(vix,1)) + " | US VIX " + str(round(f["us_vix"],1)),
-        "detail": "elevated" if vix > 18 else "calm", "impact": "HIGH"})
+        "detail": "elevated" if vix > 18 else "calm"
+    })
     return drivers
 
 def get_sparkline():
@@ -355,15 +377,19 @@ def run_backtest():
                 row = {}
                 row["date"] = hist.index[i].strftime("%Y-%m-%d")
                 row["predicted"] = predicted; row["actual"] = actual
-                row["correct"] = predicted == actual; row["confidence"] = round(score * 100, 1)
+                row["correct"] = predicted == actual
+                row["confidence"] = round(score * 100, 1)
                 last_10.append(row)
         accuracy = round(correct / total * 100, 1) if total > 0 else 0
-        return {"accuracy": accuracy, "total_days": total, "correct": correct,
-                "last_10": last_10, "summary": "Model correct " + str(accuracy) + "% over 3 months"}
+        return {
+            "accuracy": accuracy, "total_days": total, "correct": correct,
+            "last_10": last_10, "summary": "Model correct " + str(accuracy) + "% over 3 months"
+        }
     except Exception as e:
-        traceback.print_exc(); return {"error": str(e)}
+        traceback.print_exc()
+        return {"error": str(e)}
 
-# HISTORY
+# ── SIGNAL HISTORY ────────────────────────────────────────────
 
 def load_history():
     try:
@@ -377,14 +403,15 @@ def load_history():
 def save_signal_history(signal, nifty_price, regime, edge):
     try:
         history = load_history()
-        entry = {}
-        entry["timestamp"] = datetime.now().isoformat()
-        entry["date"] = datetime.now().strftime("%d %b %Y %H:%M")
-        entry["direction"] = signal.get("direction", "neutral")
-        entry["confidence"] = signal.get("confidence", 0)
-        entry["nifty_price"] = nifty_price
-        entry["regime"] = regime
-        entry["edge"] = edge
+        entry = {
+            "timestamp": datetime.now().isoformat(),
+            "date": datetime.now().strftime("%d %b %Y %H:%M"),
+            "direction": signal.get("direction", "neutral"),
+            "confidence": signal.get("confidence", 0),
+            "nifty_price": nifty_price,
+            "regime": regime,
+            "edge": edge
+        }
         history.append(entry)
         history = history[-50:]
         with open(SIGNAL_HISTORY_FILE, "w") as f:
@@ -415,7 +442,7 @@ def evaluate_history():
         print("History eval error: " + str(e))
         return []
 
-# PRICE ALERTS
+# ── PRICE ALERTS ──────────────────────────────────────────────
 
 def load_alerts():
     try:
@@ -441,15 +468,12 @@ def check_price_alerts(nifty_price):
     for alert in alerts:
         level = alert.get("level", 0)
         direction = alert.get("direction", "above")
-        triggered = False
-        if direction == "above" and nifty_price >= level:
-            triggered = True
-        elif direction == "below" and nifty_price <= level:
-            triggered = True
+        triggered = (direction == "above" and nifty_price >= level) or \
+                    (direction == "below" and nifty_price <= level)
         if triggered:
-            msg = "🚨 NIFTY PRICE ALERT"
-            msg += "Nifty " + direction + " " + str(level) + " triggered! "
-            msg += "Current: " + str(nifty_price) + " "
+            msg = "NIFTY PRICE ALERT\n\n"
+            msg += "Nifty " + direction + " " + str(level) + " triggered!\n"
+            msg += "Current: " + str(nifty_price) + "\n"
             msg += "Time: " + datetime.now().strftime("%d %b %Y %H:%M IST")
             send_telegram(msg)
         else:
@@ -457,7 +481,7 @@ def check_price_alerts(nifty_price):
     if len(remaining) != len(alerts):
         save_alerts(remaining)
 
-# STATE TRACKING (for change alerts)
+# ── STATE TRACKING with anti-noise filter ────────────────────
 
 def load_state():
     try:
@@ -466,7 +490,7 @@ def load_state():
                 return json.load(f)
     except Exception:
         pass
-    return {}
+    return {"trade_state": "NO_TRADE", "edge": 0, "cycle_count": 0, "pending_state": None, "pending_count": 0}
 
 def save_state(state):
     try:
@@ -475,226 +499,307 @@ def save_state(state):
     except Exception as e:
         print("State save error: " + str(e))
 
-def get_trade_state(edge):
-    if edge >= 6:
-        return "TRADE_READY"
-    elif edge >= 3:
-        return "SETUP_FORMING"
-    else:
-        return "NO_TRADE"
+def check_state_change(new_state, new_edge, data):
+    last = load_state()
+    old_state = last.get("trade_state", "NO_TRADE")
+    pending_state = last.get("pending_state", None)
+    pending_count = last.get("pending_count", 0)
+    alert_sent = False
 
-# TELEGRAM DECISION MESSAGES
+    # Anti-noise: confirm state change for 2 cycles before alerting
+    if new_state != old_state:
+        if pending_state == new_state:
+            pending_count += 1
+        else:
+            pending_state = new_state
+            pending_count = 1
+
+        if pending_count >= 2:
+            # State confirmed — send alert
+            msg = build_state_change_msg(old_state, new_state, new_edge, data)
+            if msg:
+                send_telegram(msg)
+                alert_sent = True
+            save_state({
+                "trade_state": new_state,
+                "edge": new_edge,
+                "cycle_count": 0,
+                "pending_state": None,
+                "pending_count": 0
+            })
+        else:
+            save_state({
+                "trade_state": old_state,
+                "edge": new_edge,
+                "cycle_count": last.get("cycle_count", 0),
+                "pending_state": pending_state,
+                "pending_count": pending_count
+            })
+    else:
+        save_state({
+            "trade_state": old_state,
+            "edge": new_edge,
+            "cycle_count": last.get("cycle_count", 0) + 1,
+            "pending_state": None,
+            "pending_count": 0
+        })
+    return alert_sent
+
+# ── TELEGRAM MESSAGES — clean formatted ──────────────────────
 
 def send_telegram(message):
     if not TELEGRAM_TOKEN or not CHAT_ID:
         return False, "Missing env vars"
     url = "https://api.telegram.org/bot" + TELEGRAM_TOKEN + "/sendMessage"
-    payload = {}
-    payload["chat_id"] = CHAT_ID
-    payload["text"] = message
+    payload = {"chat_id": CHAT_ID, "text": message}
     try:
         res = requests.post(url, json=payload, timeout=30)
         return (True, "sent") if res.status_code == 200 else (False, res.text)
     except Exception as e:
         return False, str(e)
 
-def build_reason_lines(f, regime, vix, rsi):
+def get_why_no_trade(f, vix, rsi, regime):
     reasons = []
     if vix > 20:
-        reasons.append("VIX at " + str(round(vix,1)) + " - high volatility, risk elevated")
+        reasons.append("VIX at " + str(round(vix,1)) + " (high volatility)")
     elif vix > 18:
-        reasons.append("VIX at " + str(round(vix,1)) + " - volatility elevated, caution needed")
-    else:
-        reasons.append("VIX at " + str(round(vix,1)) + " - market calm")
+        reasons.append("VIX at " + str(round(vix,1)) + " (elevated)")
     if rsi > 70:
-        reasons.append("RSI at " + str(round(rsi,1)) + " - overbought, upside limited")
-    elif rsi > 65:
-        reasons.append("RSI at " + str(round(rsi,1)) + " - approaching overbought zone")
+        reasons.append("RSI at " + str(round(rsi,1)) + " (overbought)")
     elif rsi < 30:
-        reasons.append("RSI at " + str(round(rsi,1)) + " - oversold, bounce possible")
-    elif rsi < 35:
-        reasons.append("RSI at " + str(round(rsi,1)) + " - approaching oversold zone")
-    else:
-        reasons.append("RSI at " + str(round(rsi,1)) + " - neutral zone")
-    nq = f.get("nasdaq_change", 0)
-    if nq > 1:
-        reasons.append("Nasdaq up " + str(round(nq,1)) + "% - global tailwind")
-    elif nq < -1:
-        reasons.append("Nasdaq down " + str(round(abs(nq),1)) + "% - global headwind")
-    cr = f.get("crude_change", 0)
-    if cr > 2:
-        reasons.append("Crude up " + str(round(cr,1)) + "% - inflation risk")
+        reasons.append("RSI at " + str(round(rsi,1)) + " (oversold, risky)")
+    if f.get("crude_change", 0) > 2:
+        reasons.append("Crude up " + str(round(f["crude_change"],1)) + "% (inflation risk)")
+    if f.get("global_risk", 0):
+        reasons.append("Global risk elevated")
+    if regime == "volatile":
+        reasons.append("Market in volatile regime")
+    if not reasons:
+        reasons.append("Edge too low — unclear direction")
     return reasons
 
 def build_no_trade_msg(data, session):
-    sig = data.get("signal", {}); mkt = data.get("market", {})
-    f = data.get("features", {}); edge = data.get("edge", 0)
-    nifty = mkt.get("nifty", {}); price = nifty.get("price", 0) or 0
-    chg = nifty.get("change_pct", 0) or 0; rsi = nifty.get("rsi", 0) or 0
+    sig = data.get("signal", {})
+    mkt = data.get("market", {})
+    f = data.get("features", {})
+    edge = data.get("edge", 0)
+    nifty = mkt.get("nifty", {})
+    price = nifty.get("price", 0) or 0
+    chg = nifty.get("change_pct", 0) or 0
     vix = (mkt.get("india_vix", {}) or {}).get("price", 0) or 0
+    rsi = nifty.get("rsi", 0) or 0
     regime = data.get("regime", "range")
     arrow = "+" if chg >= 0 else ""
     session_text = "MORNING" if session == "morning" else "EVENING"
     date_str = datetime.now().strftime("%d %b %Y")
-    reasons = build_reason_lines(f, regime, vix, rsi)
-    reason_block = ""
+    reasons = get_why_no_trade(f, vix, rsi, regime)
+    lines = []
+    lines.append("NIFTY AI - INTRADAY DECISION")
+    lines.append(session_text + " | " + date_str)
+    lines.append("")
+    lines.append("NO TRADE ZONE")
+    lines.append("Edge: " + str(edge) + " / 10  |  Confidence: LOW")
+    lines.append("")
+    lines.append("Why not trading:")
     for r in reasons[:3]:
-        reason_block += "- " + r + " "
-    msg = "🧠 NIFTY AI - INTRADAY DECISION"
-    msg += session_text + " | " + date_str + " "
-    msg += "🚫 NO TRADE ZONE"
-    msg += "Edge: " + str(edge) + " / 10 | Confidence: LOW"
-    msg += "Reason:" + reason_block + " "
-    msg += "Action:"
-    msg += "- Stay in cash"
-    msg += "- Wait for edge > 3"
-    msg += "- Check again at next signal"
-    msg += "Nifty: " + str(price) + " (" + arrow + str(chg) + "%)"
-    msg += "Dashboard: " + DASHBOARD_URL
-    return msg
+        lines.append("  - " + r)
+    lines.append("")
+    lines.append("Action:")
+    lines.append("  - Stay in cash")
+    lines.append("  - Wait for edge > 3")
+    lines.append("  - Next update in 5 min")
+    lines.append("")
+    lines.append("Nifty: " + str(price) + " (" + arrow + str(chg) + "%)")
+    lines.append("Dashboard: " + DASHBOARD_URL)
+    return "\n".join(lines)
 
 def build_setup_forming_msg(data, session):
-    sig = data.get("signal", {}); mkt = data.get("market", {})
-    f = data.get("features", {}); edge = data.get("edge", 0)
-    nifty = mkt.get("nifty", {}); price = nifty.get("price", 0) or 0
-    chg = nifty.get("change_pct", 0) or 0; rsi = nifty.get("rsi", 0) or 0
+    sig = data.get("signal", {})
+    mkt = data.get("market", {})
+    edge = data.get("edge", 0)
+    nifty = mkt.get("nifty", {})
+    price = nifty.get("price", 0) or 0
+    chg = nifty.get("change_pct", 0) or 0
+    rsi = nifty.get("rsi", 0) or 0
     vix = (mkt.get("india_vix", {}) or {}).get("price", 0) or 0
     direction = sig.get("direction", "neutral").upper()
-    conf = sig.get("confidence", 0)
-    arrow = "+" if chg >= 0 else ""
     session_text = "MORNING" if session == "morning" else "EVENING"
     date_str = datetime.now().strftime("%d %b %Y")
-    msg = "🧠 NIFTY AI - INTRADAY DECISION"
-    msg += session_text + " | " + date_str + " "
-    msg += "⚠️ SETUP FORMING"
-    msg += "Edge: " + str(edge) + " / 10 | Bias: " + direction + " "
-    msg += "Market improving - not ready yet"
-    msg += "Watch for:"
+    arrow = "+" if chg >= 0 else ""
+    lines = []
+    lines.append("NIFTY AI - INTRADAY DECISION")
+    lines.append(session_text + " | " + date_str)
+    lines.append("")
+    lines.append("SETUP FORMING")
+    lines.append("Edge: " + str(edge) + " / 10  |  Bias: " + direction)
+    lines.append("")
+    lines.append("Market improving - not ready yet")
+    lines.append("Watch for:")
     if direction == "BULLISH":
-        msg += "- Pullback to support for entry"
-        msg += "- VIX below 16 for confirmation"
-        msg += "- Volume spike on bounce"
+        lines.append("  - Pullback to support")
+        lines.append("  - VIX below 16")
     else:
-        msg += "- Rally to resistance for short entry"
-        msg += "- VIX staying elevated"
-        msg += "- Weak global cues"
-    msg += "Do NOT trade yet - wait for edge > 6"
-    msg += "Nifty: " + str(price) + " (" + arrow + str(chg) + "%)"
-    msg += "RSI: " + str(rsi) + " | VIX: " + str(vix) + " "
-    msg += "Dashboard: " + DASHBOARD_URL
-    return msg
+        lines.append("  - Rally to resistance")
+        lines.append("  - VIX staying elevated")
+    lines.append("")
+    lines.append("Do NOT trade yet")
+    lines.append("Wait for edge > 6")
+    lines.append("")
+    lines.append("Nifty: " + str(price) + " (" + arrow + str(chg) + "%)")
+    lines.append("RSI: " + str(rsi) + "  |  VIX: " + str(vix))
+    lines.append("Dashboard: " + DASHBOARD_URL)
+    return "\n".join(lines)
 
 def build_trade_ready_msg(data, session):
-    sig = data.get("signal", {}); mkt = data.get("market", {})
-    f = data.get("features", {}); edge = data.get("edge", 0)
-    exec_plan = data.get("execution", {})
-    nifty = mkt.get("nifty", {}); price = nifty.get("price", 0) or 0
-    chg = nifty.get("change_pct", 0) or 0; rsi = nifty.get("rsi", 0) or 0
+    sig = data.get("signal", {})
+    mkt = data.get("market", {})
+    edge = data.get("edge", 0)
+    exec_plan = data.get("execution", {}) or {}
+    nifty = mkt.get("nifty", {})
+    price = nifty.get("price", 0) or 0
+    chg = nifty.get("change_pct", 0) or 0
+    rsi = nifty.get("rsi", 0) or 0
     vix = (mkt.get("india_vix", {}) or {}).get("price", 0) or 0
     direction = sig.get("direction", "neutral").upper()
     conf = sig.get("confidence", 0)
-    regime = data.get("regime", "range")
-    arrow = "+" if chg >= 0 else ""
     session_text = "MORNING" if session == "morning" else "EVENING"
     date_str = datetime.now().strftime("%d %b %Y")
-    dir_emoji = "📈" if direction == "BULLISH" else "📉"
-    msg = "🧠 NIFTY AI - INTRADAY DECISION"
-    msg += session_text + " | " + date_str + " "
-    msg += "🔥 TRADE READY"
-    msg += "Edge: " + str(edge) + " / 10 | " + dir_emoji + " " + direction + " "
-    msg += "Confidence: " + str(conf) + "%"
+    arrow = "+" if chg >= 0 else ""
+    dir_emoji = "BULLISH" if direction == "BULLISH" else "BEARISH"
+    lines = []
+    lines.append("NIFTY AI - INTRADAY DECISION")
+    lines.append(session_text + " | " + date_str)
+    lines.append("")
+    lines.append("TRADE READY")
+    lines.append("Bias: " + dir_emoji + "  |  Edge: " + str(edge) + " / 10")
+    lines.append("Confidence: " + str(conf) + "%")
+    lines.append("")
     if exec_plan:
-        msg += "EXECUTION PLAN (INTRADAY):"
-        msg += "Entry: " + str(exec_plan.get("entry", "—")) + " "
-        msg += "Stop Loss: " + str(exec_plan.get("sl", "—")) + " "
-        msg += "Target 1: " + str(exec_plan.get("t1", "—")) + " "
-        msg += "Target 2: " + str(exec_plan.get("t2", "—")) + " "
-        msg += "Risk:Reward: " + str(exec_plan.get("rr", "—")) + " "
-        msg += "Today Range: " + str(exec_plan.get("range", "—")) + " "
-    msg += "Rules:"
-    msg += "- Exit at Target 1 partially"
-    msg += "- Move SL to entry after T1 hit"
-    msg += "- Exit all by 3:15 PM IST"
-    msg += "- Not financial advice"
-    msg += "Nifty: " + str(price) + " (" + arrow + str(chg) + "%)"
-    msg += "Dashboard: " + DASHBOARD_URL
-    return msg
+        lines.append("EXECUTION PLAN:")
+        lines.append("  Entry:   " + str(exec_plan.get("entry", "-")))
+        lines.append("  SL:      " + str(exec_plan.get("sl", "-")))
+        lines.append("  Target1: " + str(exec_plan.get("t1", "-")))
+        lines.append("  Target2: " + str(exec_plan.get("t2", "-")))
+        lines.append("  R:R      " + str(exec_plan.get("rr", "-")))
+        lines.append("  Range:   " + str(exec_plan.get("range", "-")))
+        lines.append("")
+    lines.append("Rules:")
+    lines.append("  - Exit T1 partially")
+    lines.append("  - Move SL to entry after T1")
+    lines.append("  - Exit all by 3:15 PM IST")
+    lines.append("  - Not financial advice")
+    lines.append("")
+    lines.append("Nifty: " + str(price) + " (" + arrow + str(chg) + "%)")
+    lines.append("Dashboard: " + DASHBOARD_URL)
+    return "\n".join(lines)
 
 def build_daily_review_msg(data):
-    sig = data.get("signal", {}); mkt = data.get("market", {})
-    edge = data.get("edge", 0); regime = data.get("regime", "range")
-    nifty = mkt.get("nifty", {}); price = nifty.get("price", 0) or 0
-    chg = nifty.get("change_pct", 0) or 0; rsi = nifty.get("rsi", 0) or 0
+    sig = data.get("signal", {})
+    mkt = data.get("market", {})
+    edge = data.get("edge", 0)
+    regime = data.get("regime", "range")
+    nifty = mkt.get("nifty", {})
+    price = nifty.get("price", 0) or 0
+    chg = nifty.get("change_pct", 0) or 0
+    rsi = nifty.get("rsi", 0) or 0
     vix = (mkt.get("india_vix", {}) or {}).get("price", 0) or 0
     direction = sig.get("direction", "neutral")
     trade_state = get_trade_state(edge)
     date_str = datetime.now().strftime("%d %b %Y")
-    regime_map = {"volatile":"High Volatility","trending":"Trending","oversold":"Oversold","overbought":"Overbought","range":"Range Bound"}
-    regime_text = regime_map.get(regime, regime.title())
     arrow = "+" if chg >= 0 else ""
-    msg = "📊 NIFTY AI - DAILY REVIEW"
-    msg += date_str + " "
-    msg += "Nifty: " + str(price) + " (" + arrow + str(chg) + "%)"
-    msg += "VIX: " + str(vix) + " | RSI: " + str(rsi) + " "
-    msg += "Regime: " + regime_text + " "
+    regime_map = {
+        "volatile": "High Volatility", "trending": "Trending",
+        "oversold": "Oversold", "overbought": "Overbought", "range": "Range Bound"
+    }
+    regime_text = regime_map.get(regime, regime.title())
+    lines = []
+    lines.append("NIFTY AI - DAILY REVIEW")
+    lines.append(date_str)
+    lines.append("")
+    lines.append("Nifty: " + str(price) + " (" + arrow + str(chg) + "%)")
+    lines.append("VIX: " + str(vix) + "  |  RSI: " + str(rsi))
+    lines.append("Regime: " + regime_text)
+    lines.append("Edge: " + str(edge) + " / 10")
+    lines.append("")
     if trade_state == "NO_TRADE":
-        msg += "Today Decision: NO TRAD"
-        msg += "Edge: " + str(edge) + " / 10 "
-        msg += "Market Type:"
+        lines.append("Today: NO TRADE")
+        lines.append("")
+        lines.append("Why:")
         if vix > 18:
-            msg += "- High VIX (" + str(vix) + ") = risky environment"
+            lines.append("  - High VIX (" + str(vix) + ")")
         if rsi > 65:
-            msg += "- Overbought RSI = upside limited"
+            lines.append("  - Overbought RSI")
         elif rsi < 35:
-            msg += "- Oversold RSI = downside limited"
-        msg += "Lesson: Correct decision = NO TRADE"
-        msg += "Avoiding bad setups = protecting capital"
+            lines.append("  - Oversold RSI")
+        if edge < 3:
+            lines.append("  - Edge below threshold")
+        lines.append("")
+        lines.append("Lesson: Correct call = NO TRADE")
+        lines.append("Capital preserved")
     elif trade_state == "SETUP_FORMING":
-        msg += "Today Decision: WATCHED, NOT TRADED"
-        msg += "Edge: " + str(edge) + " / 10 (below threshold) "
-        msg += "Lesson: Patience pays"
-        msg += "Setup was forming but not ready"
+        lines.append("Today: WATCHED - NOT TRADED")
+        lines.append("Edge: " + str(edge) + " (below 6 threshold)")
+        lines.append("")
+        lines.append("Lesson: Patience pays")
     else:
-        msg += "Today Decision: TRADE SIGNAL ISSUED"
-        msg += "Bias: " + direction.upper() + " "
-        msg += "Edge: " + str(edge) + " / 10 "
-        msg += "Check Dashboard for results"
-    msg += "Dashboard: " + DASHBOARD_URL
-    return msg
+        lines.append("Today: TRADE SIGNAL ISSUED")
+        lines.append("Bias: " + direction.upper())
+        lines.append("Edge: " + str(edge) + " / 10")
+        lines.append("")
+        lines.append("Check Dashboard for outcome")
+    lines.append("")
+    lines.append("Dashboard: " + DASHBOARD_URL)
+    return "\n".join(lines)
 
-def build_state_change_msg(old_state, new_state, data):
-    edge = data.get("edge", 0)
-    sig = data.get("signal", {}); mkt = data.get("market", {})
-    nifty = mkt.get("nifty", {}); price = nifty.get("price", 0) or 0
+def build_state_change_msg(old_state, new_state, edge, data):
+    sig = data.get("signal", {})
+    mkt = data.get("market", {})
+    nifty = mkt.get("nifty", {})
+    price = nifty.get("price", 0) or 0
     direction = sig.get("direction", "neutral").upper()
     date_str = datetime.now().strftime("%d %b %Y %H:%M")
+    lines = []
     if old_state == "NO_TRADE" and new_state == "SETUP_FORMING":
-        msg = "⚠️ STATE CHANGE ALERT" + date_str + " "
-        msg += "NO TRADE → SETUP FORMING"
-        msg += "Edge: " + str(edge) + " / 10"
-        msg += "Bias: " + direction + " "
-        msg += "Market conditions improving"
-        msg += "Monitor closely - do not trade yet"
-        msg += "Nifty: " + str(price) + " "
-        msg += "Dashboard: " + DASHBOARD_URL
+        lines.append("STATE CHANGE ALERT")
+        lines.append(date_str)
+        lines.append("")
+        lines.append("NO TRADE  --->  SETUP FORMING")
+        lines.append("Edge: " + str(edge) + " / 10")
+        lines.append("Bias: " + direction)
+        lines.append("")
+        lines.append("Market conditions improving")
+        lines.append("Monitor closely")
+        lines.append("Do NOT trade yet")
     elif new_state == "TRADE_READY":
-        msg = "🔥 TRADE READY ALERT" + date_str + " "
-        msg += "Edge crossed 6 / 10"
-        msg += "Bias: " + direction + " | Edge: " + str(edge) + " "
-        msg += "Check Dashboard for full execution plan "
-        msg += "Dashboard: " + DASHBOARD_URL
+        exec_plan = data.get("execution", {}) or {}
+        lines.append("TRADE READY ALERT")
+        lines.append(date_str)
+        lines.append("")
+        lines.append("Edge crossed 6 / 10")
+        lines.append("Bias: " + direction + "  |  Edge: " + str(edge))
+        if exec_plan:
+            lines.append("")
+            lines.append("Entry:   " + str(exec_plan.get("entry", "-")))
+            lines.append("SL:      " + str(exec_plan.get("sl", "-")))
+            lines.append("Target1: " + str(exec_plan.get("t1", "-")))
+            lines.append("R:R      " + str(exec_plan.get("rr", "-")))
     elif old_state == "TRADE_READY" and new_state != "TRADE_READY":
-        msg = "🚨 SETUP CHANGED" + date_str + " "
-        msg += "Trade setup no longer valid "
-        msg += "Edge dropped to: " + str(edge) + " / 10 "
-        msg += "New State: " + new_state.replace("_"," ") + " "
-        msg += "Exit or tighten stops if in trade "
-        msg += "Dashboard: " + DASHBOARD_URL
+        lines.append("SETUP CHANGED")
+        lines.append(date_str)
+        lines.append("")
+        lines.append("Trade setup no longer valid")
+        lines.append("Edge dropped to: " + str(edge) + " / 10")
+        lines.append("New State: " + new_state.replace("_", " "))
+        lines.append("")
+        lines.append("Exit or tighten stops if in trade")
     else:
         return None
-    return msg
+    lines.append("")
+    lines.append("Nifty: " + str(price))
+    lines.append("Dashboard: " + DASHBOARD_URL)
+    return "\n".join(lines)
 
-# ROUTES
+# ── ROUTES ────────────────────────────────────────────────────
 
 @app.route("/", methods=["GET"])
 def index():
@@ -710,55 +815,61 @@ def api_signal():
         market = {}
         for name in TICKERS:
             market[name] = get_cached(TICKERS[name])
+
         feats = compute_features(market)
         regime = detect_regime(feats)
         signal = compute_signal(feats, regime)
         drivers = build_drivers(feats)
         sparkline = get_sparkline()
+        pcr_data = get_cached_pcr()
+
         direction = signal.get("direction", "neutral")
         conf = signal.get("confidence", 50)
-        rsi = market.get("nifty", {}).get("rsi", 50) or 50
+        rsi = (market.get("nifty", {}) or {}).get("rsi", 50) or 50
         vix = (market.get("india_vix", {}) or {}).get("price", 14) or 14
         edge = compute_edge(direction, conf, regime, rsi, vix)
+        trade_state = get_trade_state(edge)
+
+        # Only compute execution when trade is ready
+        exec_plan = compute_execution(
+            (market.get("nifty", {}) or {}).get("price"),
+            vix, direction, regime
+        ) if trade_state == "TRADE_READY" else None
+
         nifty_price = (market.get("nifty", {}) or {}).get("price")
-        exec_plan = compute_execution(nifty_price, vix, direction, regime, edge)
-        pcr_data = get_cached_pcr()
         save_signal_history(signal, nifty_price, regime, edge)
         check_price_alerts(nifty_price)
-        trade_state = get_trade_state(edge)
-        last_state = load_state()
-        old_trade_state = last_state.get("trade_state", "NO_TRADE")
-        if old_trade_state != trade_state:
-            full_data = {}
-            full_data["signal"] = signal; full_data["market"] = market
-            full_data["regime"] = regime; full_data["edge"] = edge
-            full_data["features"] = feats; full_data["execution"] = exec_plan
-            change_msg = build_state_change_msg(old_trade_state, trade_state, full_data)
-            if change_msg:
-                send_telegram(change_msg)
-        save_state({"trade_state": trade_state, "edge": edge, "timestamp": datetime.now().isoformat()})
-        result = {}
-        result["status"] = "ok"
-        result["timestamp"] = datetime.now().isoformat()
-        result["signal"] = signal
-        result["regime"] = regime
-        result["drivers"] = drivers
-        result["sparkline"] = sparkline
-        result["edge"] = edge
-        result["trade_state"] = trade_state
-        result["execution"] = exec_plan
-        result["pcr"] = pcr_data
-        mkt = {}
-        mkt["nifty"]     = market["nifty"]
-        mkt["banknifty"] = market["banknifty"]
-        mkt["nasdaq"]    = market["nasdaq"]
-        mkt["nikkei"]    = market["nikkei"]
-        mkt["hangseng"]  = market["hangseng"]
-        mkt["usd_inr"]   = market["usd_inr"]
-        mkt["crude"]     = market["crude"]
-        mkt["gold"]      = market["gold"]
-        mkt["india_vix"] = market["india_vix"]
-        result["market"] = mkt
+
+        # State change with anti-noise
+        full_data = {
+            "signal": signal, "market": market, "regime": regime,
+            "edge": edge, "features": feats, "execution": exec_plan
+        }
+        check_state_change(trade_state, edge, full_data)
+
+        result = {
+            "status": "ok",
+            "timestamp": datetime.now().isoformat(),
+            "signal": signal,
+            "regime": regime,
+            "drivers": drivers,
+            "sparkline": sparkline,
+            "edge": edge,
+            "trade_state": trade_state,
+            "execution": exec_plan,
+            "pcr": pcr_data,
+            "market": {
+                "nifty":     market["nifty"],
+                "banknifty": market["banknifty"],
+                "nasdaq":    market["nasdaq"],
+                "nikkei":    market["nikkei"],
+                "hangseng":  market["hangseng"],
+                "usd_inr":   market["usd_inr"],
+                "crude":     market["crude"],
+                "gold":      market["gold"],
+                "india_vix": market["india_vix"]
+            }
+        }
         return jsonify(result)
     except Exception as e:
         traceback.print_exc()
@@ -771,8 +882,11 @@ def api_history():
         total = len([h for h in history if h.get("outcome") in ["correct","wrong"]])
         correct = len([h for h in history if h.get("outcome") == "correct"])
         accuracy = round(correct / total * 100, 1) if total > 0 else 0
-        return jsonify({"status": "ok", "history": list(reversed(history[-30:])),
-                        "accuracy": accuracy, "total": total, "correct": correct})
+        return jsonify({
+            "status": "ok",
+            "history": list(reversed(history[-30:])),
+            "accuracy": accuracy, "total": total, "correct": correct
+        })
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
@@ -788,10 +902,7 @@ def api_add_alert():
         if level == 0:
             return jsonify({"status": "error", "message": "level required"}), 400
         alerts = load_alerts()
-        alert = {}
-        alert["level"] = level; alert["direction"] = direction
-        alert["created"] = datetime.now().isoformat()
-        alerts.append(alert)
+        alerts.append({"level": level, "direction": direction, "created": datetime.now().isoformat()})
         save_alerts(alerts)
         return jsonify({"status": "ok", "message": "Alert set for Nifty " + direction + " " + str(level)})
     except Exception as e:
@@ -811,6 +922,14 @@ def api_backtest():
         traceback.print_exc()
         return jsonify({"status": "error", "message": str(e)}), 500
 
+@app.route("/api/pcr", methods=["GET"])
+def api_pcr():
+    try:
+        pcr_data = get_cached_pcr()
+        return jsonify({"status": "ok", "timestamp": datetime.now().isoformat(), "pcr": pcr_data})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
 @app.route("/api/telegram", methods=["GET"])
 def api_telegram():
     try:
@@ -821,16 +940,20 @@ def api_telegram():
         feats = compute_features(market)
         regime = detect_regime(feats)
         signal = compute_signal(feats, regime)
-        direction = signal.get("direction","neutral")
-        conf = signal.get("confidence",50)
-        rsi = (market.get("nifty",{}) or {}).get("rsi",50) or 50
-        vix = (market.get("india_vix",{}) or {}).get("price",14) or 14
+        direction = signal.get("direction", "neutral")
+        conf = signal.get("confidence", 50)
+        rsi = (market.get("nifty", {}) or {}).get("rsi", 50) or 50
+        vix = (market.get("india_vix", {}) or {}).get("price", 14) or 14
         edge = compute_edge(direction, conf, regime, rsi, vix)
-        exec_plan = compute_execution((market.get("nifty",{}) or {}).get("price"), vix, direction, regime, edge)
         trade_state = get_trade_state(edge)
-        data = {}
-        data["signal"] = signal; data["market"] = market; data["regime"] = regime
-        data["edge"] = edge; data["features"] = feats; data["execution"] = exec_plan
+        exec_plan = compute_execution(
+            (market.get("nifty", {}) or {}).get("price"),
+            vix, direction, regime
+        ) if trade_state == "TRADE_READY" else None
+        data = {
+            "signal": signal, "market": market, "regime": regime,
+            "edge": edge, "features": feats, "execution": exec_plan
+        }
         if trade_state == "TRADE_READY":
             msg = build_trade_ready_msg(data, session)
         elif trade_state == "SETUP_FORMING":
@@ -854,14 +977,12 @@ def api_telegram_review():
         feats = compute_features(market)
         regime = detect_regime(feats)
         signal = compute_signal(feats, regime)
-        direction = signal.get("direction","neutral")
-        conf = signal.get("confidence",50)
-        rsi = (market.get("nifty",{}) or {}).get("rsi",50) or 50
-        vix = (market.get("india_vix",{}) or {}).get("price",14) or 14
+        direction = signal.get("direction", "neutral")
+        conf = signal.get("confidence", 50)
+        rsi = (market.get("nifty", {}) or {}).get("rsi", 50) or 50
+        vix = (market.get("india_vix", {}) or {}).get("price", 14) or 14
         edge = compute_edge(direction, conf, regime, rsi, vix)
-        data = {}
-        data["signal"] = signal; data["market"] = market
-        data["regime"] = regime; data["edge"] = edge; data["features"] = feats
+        data = {"signal": signal, "market": market, "regime": regime, "edge": edge, "features": feats}
         msg = build_daily_review_msg(data)
         ok, res = send_telegram(msg)
         if ok:
@@ -873,25 +994,24 @@ def api_telegram_review():
 
 @app.route("/api/telegram/test", methods=["GET"])
 def api_telegram_test():
-    msg = "Nifty AI v5.0 Decision Bot connected!\n\n"
-    msg += "Messages now:\n"
-    msg += "- NO TRADE ZONE\n"
-    msg += "- SETUP FORMING\n"
-    msg += "- TRADE READY\n"
-    msg += "- State change alerts\n"
-    msg += "- Daily review at close"
-    ok, res = send_telegram(msg)
+    lines = []
+    lines.append("Nifty AI v5.0 - Decision Bot")
+    lines.append("")
+    lines.append("Bot is connected!")
+    lines.append("")
+    lines.append("Message types:")
+    lines.append("  - NO TRADE ZONE")
+    lines.append("  - SETUP FORMING")
+    lines.append("  - TRADE READY")
+    lines.append("  - State change alerts")
+    lines.append("  - Daily review at 3:30 PM")
+    lines.append("")
+    lines.append("Anti-noise filter: ON")
+    lines.append("State confirms after 2 cycles")
+    ok, res = send_telegram("\n".join(lines))
     if ok:
         return jsonify({"status": "ok"})
     return jsonify({"status": "error", "message": res}), 500
-
-@app.route("/api/pcr", methods=["GET"])
-def api_pcr():
-    try:
-        pcr_data = get_cached_pcr()
-        return jsonify({"status": "ok", "timestamp": datetime.now().isoformat(), "pcr": pcr_data})
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
 
 @app.route("/api/data", methods=["GET"])
 def api_data():
@@ -903,3 +1023,4 @@ def api_data():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=False)
+
